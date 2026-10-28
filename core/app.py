@@ -3,9 +3,7 @@
 This module manages the main application flow, coordinating between:
 - XiaoAI (Xiaomi speaker service)
 - XiaoZhi (AI conversation service)
-- OpenClaw (External integration)
-- OpenAI (OpenAI-compatible chat service)
-- QwenPaw (QwenPaw personal agent workstation)
+- External chat backends (core/backends.py: Hermes, OpenAI-compatible, OpenClaw, QwenPaw)
 - Audio system (VAD, KWS, Codec)
 """
 
@@ -23,9 +21,7 @@ from core.services.protocols.typing import (
     DeviceState,
     EventType,
 )
-from core.openclaw import OpenClawManager
-from core.openai import OpenAIManager
-from core.qwenpaw import QwenPawManager
+from core.backends import ChatBackend, get_backend
 from core.muse import is_muse_enabled
 from core.services.api_server import APIServer
 from core.services.diagnostics import diagnostics
@@ -40,40 +36,32 @@ class MainApp:
     def instance(
         cls,
         enable_xiaozhi: bool = True,
-        enable_openclaw: bool = False,
-        enable_openai: bool = False,
-        enable_qwenpaw: bool = False,
+        backends: tuple[str, ...] = (),
     ):
         """Get singleton instance.
 
         Args:
             enable_xiaozhi: Whether to enable XiaoZhi AI connection (default: True)
-            enable_openclaw: Whether to enable OpenClaw connection (default: False)
-            enable_qwenpaw: Whether to enable QwenPaw connection (default: False)
+            backends: Enabled external chat backends, e.g. ("hermes",) (see core/backends.py)
         """
         if cls._instance is None:
-            cls._instance = MainApp(
-                enable_xiaozhi=enable_xiaozhi,
-                enable_openclaw=enable_openclaw,
-                enable_openai=enable_openai,
-                enable_qwenpaw=enable_qwenpaw,
-            )
+            cls._instance = MainApp(enable_xiaozhi=enable_xiaozhi, backends=backends)
         return cls._instance
 
     def __init__(
         self,
         enable_xiaozhi: bool = True,
-        enable_openclaw: bool = False,
-        enable_openai: bool = False,
-        enable_qwenpaw: bool = False,
+        backends: tuple[str, ...] = (),
     ):
         """Initialize the main application.
 
         Args:
             enable_xiaozhi: Whether to enable XiaoZhi AI connection
-            enable_openclaw: Whether to enable OpenClaw connection
-            enable_qwenpaw: Whether to enable QwenPaw connection
+            backends: Enabled external chat backends (names registered in core/backends.py)
         """
+        unknown = [name for name in backends if get_backend(name) is None]
+        if unknown:
+            raise ValueError(f"Unknown backends: {unknown}")
         if MainApp._instance is not None:
             raise Exception("MainApp is singleton, use instance() to get instance")
         MainApp._instance = self
@@ -83,9 +71,7 @@ class MainApp:
 
         # Feature flags
         self._enable_xiaozhi = enable_xiaozhi
-        self._enable_openclaw = enable_openclaw
-        self._enable_openai = enable_openai
-        self._enable_qwenpaw = enable_qwenpaw
+        self._backends = tuple(backends)
 
         # Device state
         self.device_state = DeviceState.IDLE
@@ -125,6 +111,18 @@ class MainApp:
             return self.xiaozhi.protocol
         return None
 
+    def _enabled_backends(self) -> list[type[ChatBackend]]:
+        return [backend for backend in map(get_backend, self._backends) if backend is not None]
+
+    def _local_asr_backends(self) -> list[str]:
+        """启用且 input_mode 是 local_asr 的后端（需要本地音频输入和 ASR 模型）。"""
+        return [
+            backend.LABEL
+            for backend in self._enabled_backends()
+            if self.config.get_app_config(f"{backend.CONFIG_SECTION}.input_mode", "local_asr")
+            == "local_asr"
+        ]
+
     def run(self, enable_api_server: bool = False):
         """Start the main application.
 
@@ -144,32 +142,13 @@ class MainApp:
                 "Either enable audio input or disable XiaoZhi."
             )
         
-        if not audio_input_enabled:
-            local_asr_backends = []
-            if (
-                self._enable_openclaw
-                and self.config.get_app_config("openclaw.input_mode", "local_asr")
-                == "local_asr"
-            ):
-                local_asr_backends.append("OpenClaw")
-            if (
-                self._enable_openai
-                and self.config.get_app_config("openai.input_mode", "local_asr")
-                == "local_asr"
-            ):
-                local_asr_backends.append("OpenAI")
-            if (
-                self._enable_qwenpaw
-                and self.config.get_app_config("qwenpaw.input_mode", "local_asr")
-                == "local_asr"
-            ):
-                local_asr_backends.append("QwenPaw")
-            if local_asr_backends:
-                raise RuntimeError(
-                    "Audio input is disabled (AUDIO_INPUT_ENABLE=false) but "
-                    f"{', '.join(local_asr_backends)} uses 'local_asr' mode. "
-                    "Either enable audio input, or set input_mode='xiaoai_asr' in config."
-                )
+        local_asr_backends = self._local_asr_backends()
+        if not audio_input_enabled and local_asr_backends:
+            raise RuntimeError(
+                "Audio input is disabled (AUDIO_INPUT_ENABLE=false) but "
+                f"{', '.join(local_asr_backends)} uses 'local_asr' mode. "
+                "Either enable audio input, or set input_mode='xiaoai_asr' in config."
+            )
 
         # Create event loop thread
         self.loop_thread = threading.Thread(target=self._run_event_loop)
@@ -198,16 +177,10 @@ class MainApp:
             # Initialize XiaoZhi connection
             asyncio.run_coroutine_threadsafe(self._init_xiaozhi(), self.loop)
 
-        # Initialize OpenClaw if enabled
-        if self._enable_openclaw:
-            OpenClawManager.initialize_from_config()
-            asyncio.run_coroutine_threadsafe(OpenClawManager.connect(), self.loop)
-        if self._enable_openai:
-            OpenAIManager.initialize_from_config()
-            asyncio.run_coroutine_threadsafe(OpenAIManager.connect(), self.loop)
-        if self._enable_qwenpaw:
-            QwenPawManager.initialize_from_config()
-            asyncio.run_coroutine_threadsafe(QwenPawManager.connect(), self.loop)
+        # Initialize enabled external chat backends
+        for backend in self._enabled_backends():
+            backend.initialize_from_config()
+            asyncio.run_coroutine_threadsafe(backend.connect(), self.loop)
 
         # Start API Server if enabled
         if self._enable_api_server:
@@ -223,13 +196,7 @@ class MainApp:
 
         # Start audio services
         enable_muse = is_muse_enabled()
-        if (
-            self._enable_xiaozhi
-            or self._enable_openclaw
-            or self._enable_openai
-            or self._enable_qwenpaw
-            or enable_muse
-        ):
+        if self._enable_xiaozhi or self._backends or enable_muse:
             # Check audio input via env var (same as Rust), default True
             # Supports: "true"/"false", "1"/"0", "yes"/"no", "on"/"off"
             audio_input_enabled = os.environ.get(
@@ -253,27 +220,7 @@ class MainApp:
                 logger.info("[MainApp] Audio input disabled (VAD/KWS not started)")
 
             # Pre-warm local ASR only when an enabled backend is configured to use it.
-            if audio_input_enabled and (
-                (
-                    self._enable_openclaw
-                    and self.config.get_app_config("openclaw.input_mode", "local_asr")
-                    == "local_asr"
-                )
-                or (
-                    self._enable_openai
-                    and self.config.get_app_config(
-                        "openai.input_mode", "local_asr"
-                    )
-                    == "local_asr"
-                )
-                or (
-                    self._enable_qwenpaw
-                    and self.config.get_app_config(
-                        "qwenpaw.input_mode", "local_asr"
-                    )
-                    == "local_asr"
-                )
-            ):
+            if audio_input_enabled and local_asr_backends:
                 from core.services.audio.asr import ASRService
 
                 threading.Thread(
@@ -397,19 +344,9 @@ class MainApp:
                 self.api_server.stop(), self.loop
             )
 
-        # Close OpenClaw connection if connected
-        if OpenClawManager.is_connected():
-            asyncio.run_coroutine_threadsafe(
-                OpenClawManager.close(), self.loop
-            )
-        if OpenAIManager.is_enabled():
-            asyncio.run_coroutine_threadsafe(
-                OpenAIManager.close(), self.loop
-            )
-        if QwenPawManager.is_enabled():
-            asyncio.run_coroutine_threadsafe(
-                QwenPawManager.close(), self.loop
-            )
+        # Close enabled external chat backends (connections, pending waiters)
+        for backend in self._enabled_backends():
+            asyncio.run_coroutine_threadsafe(backend.close(), self.loop)
 
         if self.loop and self.loop.is_running():
             self.loop.call_soon_threadsafe(self.loop.stop)
@@ -427,111 +364,80 @@ class MainApp:
         if self.xiaozhi and self.xiaozhi.is_connected():
             await self.xiaozhi.send_text(text)
 
-    async def send_to_openclaw(self, text: str, wait_response: bool = False) -> str | None:
-        """Send message to OpenClaw (for skill-based autonomous playback).
+    async def send_to_backend(
+        self,
+        name: str,
+        text: str,
+        wait_response: bool = False,
+        play_reply: bool = False,
+    ) -> str | None:
+        """Send a one-off message to an external backend ("hermes" / "openai" / "openclaw" / "qwenpaw").
 
-        Automatically appends rule_prompt_for_skill if configured.
+        play_reply=False (skill-based autonomous playback): appends rule_prompt_for_skill.
+        play_reply=True: appends rule_prompt and plays the reply via the backend's TTS.
         Returns run_id or response text on success, None on failure.
         """
+        backend = get_backend(name)
+        if backend is None:
+            logger.error(f"[MainApp] 未知的后端: {name!r}")
+            return None
         try:
-            from core.openclaw import OpenClawManager
-            full_text = text
-            if OpenClawManager._rule_prompt_for_skill:
-                full_text = text + "\n" + OpenClawManager._rule_prompt_for_skill
-            return await OpenClawManager.send(full_text, wait_response=wait_response)
+            if play_reply:
+                return await backend.send_and_play_reply(
+                    backend.with_rule_prompt(text), wait_response=wait_response
+                )
+            return await backend.send(
+                backend.with_rule_prompt(text, for_skill=True), wait_response=wait_response
+            )
         except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 OpenClaw 失败: {type(e).__name__}: {e}")
+            logger.error(f"[MainApp] 发送消息到 {backend.LABEL} 失败: {type(e).__name__}: {e}")
             return None
 
-    async def send_to_openclaw_and_play_reply(self, text: str, wait_response: bool = False) -> str | None:
-        """Send message to OpenClaw and play the reply via TTS.
+    def set_backend_session_key(self, name: str, session_key: str):
+        """Override a backend's session key at runtime (reset to the config default on each wakeup).
 
-        Automatically appends rule_prompt if configured.
-        Returns run_id or response text on success, None on failure.
+        Call this in before_wakeup before returning the backend name to route
+        the conversation to a different session, e.g. "agent:user123:my-app".
         """
-        try:
-            from core.openclaw import OpenClawManager
-            full_text = text
-            if OpenClawManager._rule_prompt:
-                full_text = text + "\n" + OpenClawManager._rule_prompt
-            return await OpenClawManager.send_and_play_reply(full_text, wait_response=wait_response)
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 OpenClaw 失败: {type(e).__name__}: {e}")
-            return None
+        backend = get_backend(name)
+        if backend is None:
+            raise ValueError(f"Unknown backend: {name!r}")
+        backend.set_session_key(session_key)
 
-    def set_openclaw_session_key(self, session_key: str):
-        """Override the OpenClaw session key at runtime.
+    # 各后端的快捷方法（config.py 的 before_wakeup 里可以直接用）
 
-        Call this before sending a message or triggering a wakeup to route
-        the conversation to a different session.
+    async def send_to_hermes(self, text: str, wait_response: bool = False) -> str | None:
+        return await self.send_to_backend("hermes", text, wait_response)
 
-        Args:
-            session_key: New session key (e.g. "agent:user123:my-app").
-        """
-        OpenClawManager.set_session_key(session_key)
+    async def send_to_hermes_and_play_reply(self, text: str, wait_response: bool = False) -> str | None:
+        return await self.send_to_backend("hermes", text, wait_response, play_reply=True)
+
+    def set_hermes_session_key(self, session_key: str):
+        self.set_backend_session_key("hermes", session_key)
 
     async def send_to_openai(self, text: str, wait_response: bool = False) -> str | None:
-        """Send message to the OpenAI-compatible service."""
-        try:
-            full_text = text
-            if OpenAIManager._rule_prompt_for_skill:
-                full_text = text + "\n" + OpenAIManager._rule_prompt_for_skill
-            return await OpenAIManager.send(full_text, wait_response=wait_response)
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 OpenAI 兼容服务失败: {type(e).__name__}: {e}")
-            return None
+        return await self.send_to_backend("openai", text, wait_response)
 
-    async def send_to_openai_and_play_reply(
-        self,
-        text: str,
-        wait_response: bool = False,
-    ) -> str | None:
-        """Send message to the OpenAI-compatible service and play the reply."""
-        try:
-            full_text = text
-            if OpenAIManager._rule_prompt:
-                full_text = text + "\n" + OpenAIManager._rule_prompt
-            return await OpenAIManager.send_and_play_reply(
-                full_text,
-                wait_response=wait_response,
-            )
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 OpenAI 兼容服务失败: {type(e).__name__}: {e}")
-            return None
+    async def send_to_openai_and_play_reply(self, text: str, wait_response: bool = False) -> str | None:
+        return await self.send_to_backend("openai", text, wait_response, play_reply=True)
 
     def set_openai_session_key(self, session_key: str):
-        """Override the OpenAI-compatible service session key at runtime."""
-        OpenAIManager.set_session_key(session_key)
+        self.set_backend_session_key("openai", session_key)
+
+    async def send_to_openclaw(self, text: str, wait_response: bool = False) -> str | None:
+        return await self.send_to_backend("openclaw", text, wait_response)
+
+    async def send_to_openclaw_and_play_reply(self, text: str, wait_response: bool = False) -> str | None:
+        return await self.send_to_backend("openclaw", text, wait_response, play_reply=True)
+
+    def set_openclaw_session_key(self, session_key: str):
+        self.set_backend_session_key("openclaw", session_key)
 
     async def send_to_qwenpaw(self, text: str, wait_response: bool = False) -> str | None:
-        """Send message to QwenPaw."""
-        try:
-            full_text = text
-            if QwenPawManager._rule_prompt_for_skill:
-                full_text = text + "\n" + QwenPawManager._rule_prompt_for_skill
-            return await QwenPawManager.send(full_text, wait_response=wait_response)
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 QwenPaw 失败: {type(e).__name__}: {e}")
-            return None
+        return await self.send_to_backend("qwenpaw", text, wait_response)
 
-    async def send_to_qwenpaw_and_play_reply(
-        self,
-        text: str,
-        wait_response: bool = False,
-    ) -> str | None:
-        """Send message to QwenPaw and play the reply."""
-        try:
-            full_text = text
-            if QwenPawManager._rule_prompt:
-                full_text = text + "\n" + QwenPawManager._rule_prompt
-            return await QwenPawManager.send_and_play_reply(
-                full_text,
-                wait_response=wait_response,
-            )
-        except Exception as e:
-            logger.error(f"[MainApp] 发送消息到 QwenPaw 失败: {type(e).__name__}: {e}")
-            return None
+    async def send_to_qwenpaw_and_play_reply(self, text: str, wait_response: bool = False) -> str | None:
+        return await self.send_to_backend("qwenpaw", text, wait_response, play_reply=True)
 
     def set_qwenpaw_session_key(self, session_key: str):
-        """Override the QwenPaw session key at runtime."""
-        QwenPawManager.set_session_key(session_key)
+        self.set_backend_session_key("qwenpaw", session_key)

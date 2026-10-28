@@ -499,14 +499,14 @@ class BeforeWakeupWakeWordRoutingTest(unittest.IsolatedAsyncioTestCase):
         result = await self.config.before_wakeup(speaker, text, source, mock.AsyncMock())
         return result, speaker.events
 
-    async def test_variants_route_to_openai(self):
+    async def test_variants_route_to_hermes(self):
         with env(MUSE_ENABLE="1"):
             for text in ("Hey Muse，开灯", "嗨，缪思，几点了", "muse 我今晚想洗澡", "嗯，缪斯"):
                 with self.subTest(text=text):
-                    self.assertEqual(await self.route(text, "xiaoai"), ("openai", [("abort",)]))
+                    self.assertEqual(await self.route(text, "xiaoai"), ("hermes", [("abort",)]))
             for text in ("hi▁muse", "hey▁muse", "嗨缪斯", "哈喽缪斯"):
                 with self.subTest(text=text):
-                    self.assertEqual(await self.route(text, "kws"), ("openai", []))
+                    self.assertEqual(await self.route(text, "kws"), ("hermes", []))
 
     async def test_non_muse_text_falls_through(self):
         with env(MUSE_ENABLE="1"):

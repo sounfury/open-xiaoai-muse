@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+from core.backends import all_backends, get_backend
 from core.ref import (
     get_app,
     get_kws,
@@ -17,12 +18,9 @@ class WakeupSessionManager:
 
     def __init__(self):
         self.config = ConfigManager.instance()
-        self._openclaw_controller = None
-        self._openclaw_task: asyncio.Task | None = None
-        self._openai_controller = None
-        self._openai_task: asyncio.Task | None = None
-        self._qwenpaw_controller = None
-        self._qwenpaw_task: asyncio.Task | None = None
+        # 当前的外部后端连续对话（同一时间最多一个：开始新会话前 reset_all_sessions 会停掉旧的）
+        self._controller = None
+        self._controller_task: asyncio.Task | None = None
         self._xiaozhi_future: asyncio.Future | None = None
         # 只在 MainApp.loop 读写；整个唤醒过程（含重置与会话）只有一个拥有者。
         self._wakeup_task: asyncio.Task | None = None
@@ -103,19 +101,14 @@ class WakeupSessionManager:
 
     async def _stop_external_sessions(self):
         """取消并等到旧会话彻底退出，包括子播放器的清理。"""
-        tasks = []
-        for name in ("openclaw", "openai", "qwenpaw"):
-            controller = getattr(self, f"_{name}_controller")
-            task = getattr(self, f"_{name}_task")
-            if controller and controller.is_active():
-                controller.stop()
-            if task and not task.done():
-                # owner.cancel() 会沿 await 传播取消，不能再次取消正在清理播放器的任务。
-                if not task.cancelling():
-                    task.cancel()
-                tasks.append(task)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        controller, task = self._controller, self._controller_task
+        if controller and controller.is_active():
+            controller.stop()
+        if task and not task.done():
+            # owner.cancel() 会沿 await 传播取消，不能再次取消正在清理播放器的任务。
+            if not task.cancelling():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def on_wakeup(self):
         logger.info("[Wakeup] Wakeup session started")
@@ -149,18 +142,14 @@ class WakeupSessionManager:
         is_vad_begin,
     ) -> bool:
         """Route XiaoAI native ASR results to the active external backend controller."""
-        for controller in (
-            self._openclaw_controller,
-            self._openai_controller,
-            self._qwenpaw_controller,
-        ):
-            if controller and controller.is_active():
-                return controller.consume_xiaoai_recognize_result(
-                    dialog_id=dialog_id,
-                    text=text,
-                    is_final=is_final,
-                    is_vad_begin=is_vad_begin,
-                )
+        controller = self._controller
+        if controller and controller.is_active():
+            return controller.consume_xiaoai_recognize_result(
+                dialog_id=dialog_id,
+                text=text,
+                is_final=is_final,
+                is_vad_begin=is_vad_begin,
+            )
         return False
 
     async def wakeup(self, text, source, position: int | None = None, detected_at: float | None = None):
@@ -203,22 +192,9 @@ class WakeupSessionManager:
         logger.debug(f"[Wakeup] Received wakeup request from {source}: {text}")
 
         # Reset session_key to config default before each wakeup,
-        # so paths that don't call set_openclaw_session_key() always use the default.
-        from core.openclaw import OpenClawManager
-        default_session_key = self.config.get_app_config("openclaw", {}).get(
-            "session_key", "agent:main:open-xiaoai-bridge"
-        )
-        OpenClawManager._session_key = default_session_key
-        from core.openai import OpenAIManager
-        default_openai_session_key = self.config.get_app_config(
-            "openai", {}
-        ).get("session_key", "agent:default:open-xiaoai-bridge")
-        OpenAIManager._session_key = default_openai_session_key
-        from core.qwenpaw import QwenPawManager
-        default_qwenpaw_session_key = self.config.get_app_config(
-            "qwenpaw", {}
-        ).get("session_key", "agent:default:open-xiaoai-bridge")
-        QwenPawManager._session_key = default_qwenpaw_session_key
+        # so paths that don't call set_*_session_key() always use the default.
+        for backend in all_backends():
+            backend.reset_session_key()
 
         should_wakeup = await before_wakeup(
             get_speaker(),
@@ -236,46 +212,35 @@ class WakeupSessionManager:
         else:
             TurnTimer.clear()
 
-        if should_wakeup == "openclaw":
-            await self._start_openclaw_conversation(position)
-        elif should_wakeup == "openai":
-            await self._start_openai_conversation(position)
-        elif should_wakeup == "qwenpaw":
-            await self._start_qwenpaw_conversation(position)
-        elif should_wakeup == "xiaozhi":
+        if should_wakeup == "xiaozhi":
             self.on_wakeup()
+        elif should_wakeup is not None:
+            backend = get_backend(should_wakeup)
+            if backend is None:
+                logger.error(f"[Wakeup] before_wakeup 返回了未知的后端: {should_wakeup!r}")
+            elif not backend.is_enabled():
+                logger.error(
+                    f"[Wakeup] {backend.LABEL} 未启用（{' / '.join(backend.ENABLE_ENV)}），不进入连续对话"
+                )
+            else:
+                await self._start_external_conversation(backend, position)
 
-    async def _start_openclaw_conversation(self, wake_position: int | None = None):
-        from core.openclaw_conversation import OpenClawConversationController
-
-        await self._start_external_conversation("openclaw", OpenClawConversationController, wake_position)
-
-    async def _start_openai_conversation(self, wake_position: int | None = None):
-        from core.openai_conversation import OpenAIConversationController
-
-        await self._start_external_conversation("openai", OpenAIConversationController, wake_position)
-
-    async def _start_qwenpaw_conversation(self, wake_position: int | None = None):
-        from core.qwenpaw_conversation import QwenPawConversationController
-
-        await self._start_external_conversation("qwenpaw", QwenPawConversationController, wake_position)
-
-    async def _start_external_conversation(self, name, controller_type, wake_position):
+    async def _start_external_conversation(self, backend, wake_position):
         """唤醒拥有者等待整个会话结束；旧任务只能清理自己持有的引用。"""
-        controller = controller_type()
+        from core.external_conversation import ExternalConversationController
+
+        controller = ExternalConversationController(backend)
         task = asyncio.create_task(controller.start(wake_position=wake_position))
-        setattr(self, f"_{name}_controller", controller)
-        setattr(self, f"_{name}_task", task)
+        self._controller, self._controller_task = controller, task
         try:
             await task
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error(f"[Wakeup] {name} conversation failed: {type(exc).__name__}: {exc}")
+            logger.error(f"[Wakeup] {backend.NAME} conversation failed: {type(exc).__name__}: {exc}")
         finally:
-            if getattr(self, f"_{name}_task") is task:
-                setattr(self, f"_{name}_controller", None)
-                setattr(self, f"_{name}_task", None)
+            if self._controller_task is task:
+                self._controller, self._controller_task = None, None
 
     async def reset_all_sessions(self):
         """Reset all active sessions before starting a new one.

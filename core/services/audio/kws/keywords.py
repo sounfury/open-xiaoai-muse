@@ -28,34 +28,26 @@ def should_generate_keywords():
     """Return whether keyword generation should run."""
     import os
 
-    xiaozhi_enabled = os.environ.get("XIAOZHI_ENABLE", "").lower() in ("1", "true", "yes")
-    # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
-    openclaw_env = os.environ.get("OPENCLAW_ENABLE") or os.environ.get("OPENCLAW_ENABLED") or ""
-    openclaw_enabled = openclaw_env.lower() in ("1", "true", "yes")
-    openai_enabled = os.environ.get("OPENAI_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    qwenpaw_enabled = os.environ.get("QWENPAW_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    muse_enabled = os.environ.get("MUSE_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    def enabled(*names: str) -> bool:
+        value = next((os.environ[name] for name in names if os.environ.get(name)), "")
+        return value.lower() in ("1", "true", "yes")
 
-    if (
-        not xiaozhi_enabled
-        and not openclaw_enabled
-        and not openai_enabled
-        and not qwenpaw_enabled
-        and not muse_enabled
+    # 小智、外部对话后端（core/backends.py）、小爱管家任一启用就需要唤醒词文件
+    # OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧) 都认
+    if not any(
+        (
+            enabled("XIAOZHI_ENABLE"),
+            enabled("HERMES_ENABLE"),
+            enabled("OPENCLAW_ENABLE", "OPENCLAW_ENABLED"),
+            enabled("OPENAI_ENABLE"),
+            enabled("QWENPAW_ENABLE"),
+            enabled("MUSE_ENABLE"),
+        )
     ):
-        return False, "XIAOZHI_ENABLE, OPENCLAW_ENABLE/OPENCLAW_ENABLED, OPENAI_ENABLE, QWENPAW_ENABLE and MUSE_ENABLE are all disabled"
+        return False, (
+            "XIAOZHI_ENABLE, HERMES_ENABLE, OPENCLAW_ENABLE/OPENCLAW_ENABLED, OPENAI_ENABLE, "
+            "QWENPAW_ENABLE and MUSE_ENABLE are all disabled"
+        )
 
     return True, ""
 

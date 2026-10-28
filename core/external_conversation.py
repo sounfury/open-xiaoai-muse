@@ -21,6 +21,8 @@ Key design decisions:
     after the reply ends is not lost, even while the ready sound is playing.
   - Exit words follow core/exit_words.py: "拜拜" exits now, "关灯，拜拜" is
     answered first and then exits.
+  - The backend is a ChatBackend (core/backends.py); this module only uses its
+    public methods, so every backend shares the same conversation flow.
   - Backends with supports_streaming() (OpenAI / Hermes) stream the reply: it
     is cut into segments and the first one plays as soon as it arrives; a short
     filler ("稍等" / "我查一下") covers tool calls; a wake word stops it at any
@@ -31,6 +33,7 @@ Key design decisions:
 
 import asyncio
 import os
+from typing import TYPE_CHECKING
 
 import open_xiaoai_server
 
@@ -50,6 +53,9 @@ from core.services.tts.segmenter import ReplySegmenter, SegmenterSettings
 from core.services.tts.wake_reply import WakeReplyPlayer, phrases_from_config, play_reply
 from core.utils.config import ConfigManager
 from core.utils.turn_timer import TurnTimer, lag_ms
+
+if TYPE_CHECKING:
+    from core.backends import ChatBackend
 
 _NOTIFY_SOUND_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -163,17 +169,15 @@ class ExternalConversationController:
     LOCAL_ASR_INPUT = "local_asr"
     XIAOAI_ASR_INPUT = "xiaoai_asr"
     XIAOAI_ASR_TIMEOUT = "__timeout__"
-    CONFIG_PREFIX = "openclaw"
-    BACKEND_NAME = "OpenClaw"
-    LOG_MODULE = "OpenClaw Conv"
-    WAKEUP_SOURCE = "openclaw"
-    MANAGER = None
 
-    def __init__(self):
+    def __init__(self, backend: "type[ChatBackend]"):
         self.config = ConfigManager.instance()
-        if self.MANAGER is None:
-            raise RuntimeError("MANAGER must be set by subclass")
-        self.backend = self.MANAGER
+        self.backend = backend
+        # 配置段、日志名、after_wakeup 的 source 都取自后端
+        self.CONFIG_PREFIX = backend.CONFIG_SECTION
+        self.BACKEND_NAME = backend.LABEL
+        self.LOG_MODULE = f"{backend.LABEL} Conv"
+        self.WAKEUP_SOURCE = backend.NAME
         self.active = False
 
         # Per-session asyncio.Future used to receive VAD events
@@ -235,6 +239,7 @@ class ExternalConversationController:
             logger.warning(f"[{self.LOG_MODULE}] Already active, ignoring start()")
             return
         self.active = True
+        self.backend.begin_conversation()
         self._loop = asyncio.get_running_loop()
         self._next_listen = None
         self._next_after_keyword = False
@@ -291,6 +296,7 @@ class ExternalConversationController:
         if not self.active:
             return
         self.active = False
+        self.backend.end_conversation()
         self._cancel_vad_future()
         self._cancel_xiaoai_asr_future()
         kws = get_kws()
@@ -428,10 +434,9 @@ class ExternalConversationController:
             return None, None
 
     def _streaming(self) -> bool:
-        """后端支持流式回复且已开启（OpenAI: openai.stream）。"""
-        fn = getattr(self.backend, "supports_streaming", None)
+        """后端支持流式回复且已开启（OpenAI / Hermes: <配置段>.stream）。"""
         try:
-            return bool(fn and fn())
+            return bool(self.backend.supports_streaming())
         except Exception:
             return False
 
@@ -596,29 +601,7 @@ class ExternalConversationController:
             logger.info(f"Exit after answer: {word} ({text})", module=self.LOG_MODULE)
 
         # 4. Send to backend
-        full_text = text
-        if self.backend._rule_prompt:
-            full_text = text + "\n" + self.backend._rule_prompt
-        self._log_turn_timing()
-        if self._streaming():
-            # 流式：请求在后台读，边收边播
-            reply = ReplyStream(self.backend.stream_reply(full_text))
-            try:
-                await self._play_send_sound()
-            except BaseException:
-                await reply.close()
-                raise
-        else:
-            # 先发出请求（不阻塞等回复），立即播"咻"给用户即时反馈，再等回复
-            # 注意：直接用 _send_and_track 而非 send(wait_response=False)，
-            # 后者会立即清掉 Future，导致后续 _wait_response 拿不到回复
-            run_id = await self.backend._send_and_track(full_text)
-            await self._play_send_sound()
-            reply = await self.backend._wait_response(run_id) if run_id else None
-            if reply is None:
-                logger.warning(f"No response from {self.BACKEND_NAME}", module=self.LOG_MODULE)
-                reply = self._failure_text()
-            reply = str(reply)
+        reply = await self._ask_backend(text, send_sound=True)
 
         exit_after = intent == AFTER_ANSWER
         interrupted = await self._play_reply_and_resume(reply, vad, exit_after=exit_after)
@@ -645,24 +628,40 @@ class ExternalConversationController:
             logger.info(f"Exit after answer: {word} ({text})", module=self.LOG_MODULE)
 
         self._light_state("thinking")
-        full_text = text
-        if self.backend._rule_prompt:
-            full_text = text + "\n" + self.backend._rule_prompt
-        self._log_turn_timing()
-        if self._streaming():
-            reply = ReplyStream(self.backend.stream_reply(full_text))
-        else:
-            reply = await self.backend.send(full_text, wait_response=True)
-            if reply is None:
-                logger.warning(f"No response from {self.BACKEND_NAME}", module=self.LOG_MODULE)
-                reply = self._failure_text()
-            reply = str(reply)
+        reply = await self._ask_backend(text, send_sound=False)
 
         exit_after = intent == AFTER_ANSWER
         interrupted = await self._play_reply_and_resume(reply, exit_after=exit_after)
         if (exit_after or self._end_after_reply) and not interrupted:
             return "exit_after_answer"
         return "continue"
+
+    async def _ask_backend(self, text: str, send_sound: bool) -> "str | ReplyStream":
+        """把这句话发给后端：流式时返回还在生成的 ReplyStream，否则等到完整回复。
+
+        send_sound：发出请求后播"咻"（和请求并行，给用户即时反馈）。
+        """
+        full_text = self.backend.with_rule_prompt(text)
+        self._log_turn_timing()
+        if self._streaming():
+            # 流式：请求在后台读，边收边播
+            reply = ReplyStream(self.backend.stream_reply(full_text))
+            if send_sound:
+                try:
+                    await self._play_send_sound()
+                except BaseException:
+                    await reply.close()
+                    raise
+            return reply
+        # 先发出请求（不阻塞等回复），再播"咻"，然后等回复
+        run_id = await self.backend.submit(full_text)
+        if send_sound:
+            await self._play_send_sound()
+        reply = await self.backend.wait_reply(run_id) if run_id else None
+        if reply is None:
+            logger.warning(f"No response from {self.BACKEND_NAME}", module=self.LOG_MODULE)
+            return self._failure_text()
+        return str(reply)
 
     def _strip_wake_word(self, text: str) -> str:
         """去掉句首的唤醒词（或唤醒词的尾音）；不含时原样返回。
@@ -1100,7 +1099,7 @@ class ExternalConversationController:
         from core.services.tts.router import TTSRouter
 
         provider = TTSRouter.resolve_provider(
-            getattr(self.backend, "_tts_provider", None),
+            self.backend.tts_provider(),
             self.backend.get_tts_speaker_for_session_key(),
         )
         return provider == "xiaoai" and get_speaker() is not None
@@ -1154,7 +1153,7 @@ class ExternalConversationController:
             self._light_state("thinking")
 
         provider = TTSRouter.resolve_provider(
-            getattr(self.backend, "_tts_provider", None),
+            self.backend.tts_provider(),
             self.backend.get_tts_speaker_for_session_key(),
         )
         speaker = get_speaker()
@@ -1292,7 +1291,7 @@ class ExternalConversationController:
         """Play text via Doubao TTS (blocks until playback finishes)."""
         self._playback_token = open_xiaoai_server.begin_playback_session()
         try:
-            await self.backend._play_response_with_tts(
+            await self.backend.play_text(
                 text,
                 tts_speaker=self.backend.get_tts_speaker_for_session_key(),
                 playback_token=self._playback_token,
@@ -1351,7 +1350,7 @@ class ExternalConversationController:
                     await after_wakeup(
                         speaker,
                         source=self.WAKEUP_SOURCE,
-                        session_key=self.backend._session_key,
+                        session_key=self.backend.get_session_key(),
                     )
                 except Exception as exc:
                     import traceback

@@ -192,9 +192,30 @@ def test_effects_defaults_and_native_listening():
 # ---- ExternalConversationController ----
 
 
-class OpenClawLike(ext.ExternalConversationController):
-    CONFIG_PREFIX = "openclaw"
-    MANAGER = SimpleNamespace(_rule_prompt="")
+def fake_backend(**overrides):
+    """按 core/backends.py ChatBackend 公开接口做的假后端（配置段 openclaw）。"""
+    backend = SimpleNamespace(
+        NAME="openclaw",
+        LABEL="OpenClaw",
+        CONFIG_SECTION="openclaw",
+        begin_conversation=lambda: None,
+        end_conversation=lambda: None,
+        supports_streaming=lambda: False,
+        tts_provider=lambda: None,
+        get_tts_speaker_for_session_key=lambda: None,
+        get_session_key=lambda: None,
+        with_rule_prompt=lambda text, for_skill=False: text,
+        play_text=AsyncMock(),
+        submit=AsyncMock(return_value=None),
+        wait_reply=AsyncMock(return_value=None),
+    )
+    for key, value in overrides.items():
+        setattr(backend, key, value)
+    return backend
+
+
+def OpenClawLike():
+    return ext.ExternalConversationController(fake_backend())
 
 
 class FakeKWS:
@@ -349,11 +370,7 @@ def tts_until_cancelled(conv):
         started.set()
         await asyncio.sleep(3600)
 
-    conv.backend = SimpleNamespace(
-        _play_response_with_tts=play,
-        get_tts_speaker_for_session_key=lambda: None,
-        _rule_prompt="",
-    )
+    conv.backend = fake_backend(play_text=play)
     return started
 
 
@@ -386,10 +403,7 @@ def test_barge_in_stops_reply_and_skips_notify(env):
 def test_reply_finishes_without_barge_in(env):
     async def main():
         conv = make_conv(asyncio.get_running_loop())
-        conv.backend = SimpleNamespace(
-            _play_response_with_tts=AsyncMock(),
-            get_tts_speaker_for_session_key=lambda: None,
-        )
+        conv.backend = fake_backend()
         conv._play_notify = AsyncMock()
         conv._wait_for_silence = AsyncMock()
         await conv._play_reply_and_resume("短回答", vad=MagicMock())
@@ -412,10 +426,7 @@ def test_near_end_gate_ignores_own_voice(env):
         async def play(*_args, **_kwargs):
             await asyncio.sleep(0.05)
 
-        conv.backend = SimpleNamespace(
-            _play_response_with_tts=play,
-            get_tts_speaker_for_session_key=lambda: None,
-        )
+        conv.backend = fake_backend(play_text=play)
         conv._play_notify = AsyncMock()
         conv._wait_for_silence = AsyncMock()
         task = asyncio.create_task(conv._play_reply_and_resume("回答", vad=MagicMock()))
@@ -434,10 +445,7 @@ def test_without_echo_reference_mutes_during_reply(env):
 
     async def main():
         conv = make_conv(asyncio.get_running_loop())
-        conv.backend = SimpleNamespace(
-            _play_response_with_tts=AsyncMock(),
-            get_tts_speaker_for_session_key=lambda: None,
-        )
+        conv.backend = fake_backend()
         conv._play_notify = AsyncMock()
         conv._wait_for_silence = AsyncMock()
         await conv._play_reply_and_resume("回答", vad=MagicMock())
@@ -469,9 +477,7 @@ def test_turn_after_barge_in_uses_preroll_and_strips_wake_word(env, monkeypatch)
             sent.append(text)
             return "run"
 
-        conv.backend = SimpleNamespace(
-            _rule_prompt="", _send_and_track=send, _wait_response=AsyncMock(return_value="晴")
-        )
+        conv.backend = fake_backend(submit=send, wait_reply=AsyncMock(return_value="晴"))
         conv._play_reply_and_resume = AsyncMock()
         assert await conv._run_one_turn_with_local_asr() == "continue"
         conv._wait_for_speech.assert_awaited_once()

@@ -15,14 +15,14 @@ export API_SERVER_ENABLE=1
 export API_SERVER_HOST=127.0.0.1
 export API_SERVER_PORT=9092
 export AUDIO_INPUT_ENABLE=1   # VAD/KWS 模型在 core/models
-export MUSE_ENABLE=1          # "你好缪斯"唤醒词 → OpenAI/Hermes 连续对话
+export MUSE_ENABLE=1          # "你好缪斯"唤醒词 → Hermes 连续对话
 
-export OPENAI_ENABLE=1
-export OPENAI_BASE_URL=https://hermes.oci.sounfury.top/v1
-export OPENAI_MODEL=muse-home
-OPENAI_API_KEY=$(head -n1 .hermes_api_key 2>/dev/null | tr -d '\r\n')
-export OPENAI_API_KEY
-if [ -z "$OPENAI_API_KEY" ]; then
+export HERMES_ENABLE=1
+export HERMES_BASE_URL=https://hermes.oci.sounfury.top/v1
+export HERMES_MODEL=muse-home
+HERMES_API_KEY=$(head -n1 .hermes_api_key 2>/dev/null | tr -d '\r\n')
+export HERMES_API_KEY
+if [ -z "$HERMES_API_KEY" ]; then
   echo "[run-bridge] ERROR: .hermes_api_key missing or empty" >> "$LOG"
 fi
 

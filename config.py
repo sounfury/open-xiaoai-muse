@@ -28,30 +28,31 @@ async def before_wakeup(speaker, text, source, app):
         source  : 唤醒来源
                     'kws'    — 本地关键词唤醒（用户说了唤醒词）
                     'xiaoai' — 小爱同学收到用户语音指令
-        app     : MainApp 实例，可调用 send_to_openclaw / send_to_openai / send_to_qwenpaw 等方法
+        app     : MainApp 实例，可调用 send_to_backend(name, text) / send_to_hermes / send_to_openclaw 等方法
 
-    返回值：
-        "openclaw" — 进入 OpenClaw 连续对话流程
-        "openai"   — 进入 OpenAI 兼容服务连续对话流程（例如 Hermes Agent API Server）
-        "qwenpaw"  — 进入 QwenPaw 连续对话流程
+    返回值（后端名见 core/backends.py，对应的后端需要用环境变量启用）：
+        "hermes"   — 进入 Hermes Agent 连续对话（HERMES_ENABLE=1）
+        "openai"   — 进入通用 OpenAI 兼容服务连续对话（OPENAI_ENABLE=1，Ollama / LM Studio 等）
+        "openclaw" — 进入 OpenClaw 连续对话（OPENCLAW_ENABLE=1）
+        "qwenpaw"  — 进入 QwenPaw 连续对话（QWENPAW_ENABLE=1）
         "xiaozhi"  — 进入小智 AI 流程
-        None       — 不做额外处理（可在此自行调用 app.send_to_openclaw 等）
+        None       — 不做额外处理（可在此自行调用 app.send_to_backend 等）
 
     ---
     动态切换 session_key：
-        每次进入此函数前，框架会自动将 session_key 重置为配置文件中的默认值。
+        每次进入此函数前，框架会自动将各后端的 session_key 重置为配置文件中的默认值。
         如需路由到其他 Agent，在 return "openclaw" 之前调用：
-            app.set_openclaw_session_key("agent:main:xxx")
+            app.set_backend_session_key("openclaw", "agent:main:xxx")
         不调用则自动使用 openclaw.session_key 的默认值，无需手动重置。
     """
-    # --- 小爱管家："你好缪斯" → OpenAI 兼容服务（Hermes）连续对话（需 MUSE_ENABLE=1 和 OPENAI_ENABLE=1）---
+    # --- 小爱管家："你好缪斯" → Hermes 连续对话（需 MUSE_ENABLE=1 和 HERMES_ENABLE=1）---
     # KWS 命中唤醒词，或小爱 ASR 文本以 muse.wake_words 中任一项开头（如"你好缪斯，我今晚想洗澡"、"Hey Muse，开灯"）
     from core.muse import match_muse_text, suppress_native_xiaoai
 
     if match_muse_text(text):
         if source == "xiaoai":
             await suppress_native_xiaoai(speaker)  # 拦截原生小爱对这句话的处理
-        return "openai"
+        return "hermes"
 
     # 其他唤醒词 / 小爱指令不处理（上游的龙虾、小黑、小爪、小智演示路由已删除）
     return None
@@ -63,17 +64,15 @@ async def after_wakeup(speaker, source=None, session_key=None):
 
     - source: 退出来源
         - 'xiaozhi': 小智对话超时退出
-        - 'openclaw': OpenClaw 连续对话退出
-        - 'openai': OpenAI 兼容服务连续对话退出
-        - 'qwenpaw': QwenPaw 连续对话退出
-    - session_key: 当前 OpenClaw/OpenAI/QwenPaw 后端 session_key
+        - 'hermes' / 'openai' / 'openclaw' / 'qwenpaw': 对应后端的连续对话退出
+    - session_key: 当前后端的 session_key
         可据此区分是哪个 Agent 退出，例如播放不同的退出提示语
     """
-    if source == "openai":
-        # 用 openai 后端配置的 TTS（openai.tts_provider），和对话回复同一个声音；TTS 不可用时自动回退小爱原生
-        from core.openai import OpenAIManager
+    if source == "hermes":
+        # 用 Hermes 后端配置的 TTS（hermes.tts_provider），和对话回复同一个声音；TTS 不可用时自动回退小爱原生
+        from core.hermes import HermesManager
 
-        await OpenAIManager._play_response_with_tts("再见")
+        await HermesManager.play_text("再见")
 
 
 APP_CONFIG = {
@@ -133,7 +132,7 @@ APP_CONFIG = {
         # 最小静默时长（ms）
         "min_silence_duration": 500,
     },
-    # 外部后端（OpenAI / OpenClaw / QwenPaw）连续对话的轮次衔接
+    # 外部后端（Hermes / OpenAI / OpenClaw / QwenPaw）连续对话的轮次衔接
     "conversation": {
         # 唤醒后 / 每轮回答播完后播提示音。有回采时提示音不耽误听：这期间说的话会回放给 VAD
         "start_sound": True,
@@ -161,7 +160,7 @@ APP_CONFIG = {
         # 句尾像没说完（"帮我把"、"凌晨12点的"、"那个"）时，连续静音总共等到这么久，ms。
         # 规则见 core/utterance.py。设成和 end_silence_ms 一样就关闭额外等待。
         "hesitation_silence_ms": 2600,
-        # 流式回复怎么切段（openai.stream=True 时）：第一段尽快播，后面攒长一点少停顿
+        # 流式回复怎么切段（hermes.stream / openai.stream=True 时）：第一段尽快播，后面攒长一点少停顿
         "reply_segments": {
             "first_min_chars": 8,  # 第一段在句号处就出；在逗号处切需要至少这么多字
             "target_chars": 30,  # 后面的段攒到这么多字，在标点处切（本机 GPT-SoVITS：第 2 段短一点，第 1 段播完时它已合成好；原 60）
@@ -346,7 +345,7 @@ APP_CONFIG = {
         #   agentId: OpenClaw 中配置的 Agent ID（默认为 main）
         #   rest:    会话标识，可自由命名，用于区分不同来源/场景 （默认为 open-xiaoai-bridge)
         # 也可在运行时动态切换（下一条消息即刻生效，无需重连）：
-        #   app.set_openclaw_session_key("agent:assistant:open-xiaoai-bridge")
+        #   app.set_backend_session_key("openclaw", "agent:assistant:open-xiaoai-bridge")
         "session_key": "agent:main:open-xiaoai-bridge",
         "identity_path": "/app/openclaw/identity/device.json",  # 设备身份文件路径；容器部署时建议挂载持久化目录
         "tts_speed": 1.0,  # TTS 语速 (0.5-2.0)，仅豆包 TTS 生效，小爱原生 TTS 不支持调速
@@ -366,17 +365,17 @@ APP_CONFIG = {
         "exit_keywords": ["拜拜", "再见", "退出", "退下", "停止", "没事了", "不用了", "结束对话", "bye", "goodbye"],
         # rule_prompt: 用于「自动播放」和「连续对话」场景
         #   - send_to_openclaw_and_play_reply() 会自动追加
-        #   - OpenClawConversationController 会自动追加
+        #   - 连续对话（ExternalConversationController）会自动追加
         "rule_prompt": "注意：将结果处理成纯文字版，不要返回任何 markdown 格式，也不要包含任何代码块，并将字数控制在300字以内",
         # rule_prompt_for_skill: 用于「Agent 自主播报」场景（方式三）
         #   - send_to_openclaw() 会自动追加
         #   - 告诉 Agent 需要调用 xiaoai-tts skill 来播报，因为服务端不会自动播放
         "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送的，他看不到你回复的文字，调用 `xiaoai-tts` skill 播报出来。字数控制在300字以内"
     },
-    # OpenAI-compatible Service Configuration
-    # 可接入 Hermes Agent API Server、OpenAI、Ollama、LM Studio 等兼容 /v1/chat/completions 的服务
-    "openai": {
-        # Defaults; start-bridge.bat env OPENAI_* overrides these (api_key via .hermes_api_key)
+    # Hermes Agent（API Server 模式，OpenAI 兼容接口 + Hermes 的会话和工具事件，见 core/hermes.py）
+    # 启用：HERMES_ENABLE=1；环境变量 HERMES_BASE_URL / HERMES_API_KEY / HERMES_MODEL 覆盖下面的值
+    "hermes": {
+        # Defaults; start script env HERMES_* overrides these (api_key via .hermes_api_key)
         "base_url": "https://hermes.oci.sounfury.top/v1",
         "api_key": "",
         "model": "muse-home",
@@ -394,15 +393,14 @@ APP_CONFIG = {
         #   - "local_asr": 使用本地 VAD + SherpaASR
         #   - "xiaoai_asr": 接管小爱原生 ASR 结果
         "input_mode": "local_asr",
-        # session_key 统一采用 agent:<agentId>:<rest> 格式，便于 after_wakeup 解析
+        # session_key 统一采用 agent:<agentId>:<rest> 格式，便于 after_wakeup 解析。
+        # 它也是 Hermes 长期记忆的作用域（下面的 session_header），改了就读不到以前的记忆
         "session_key": "agent:default:open-xiaoai-bridge",
-        # 可选：把 session_key 作为请求头发给服务端，用于服务端长期记忆作用域（跨唤醒不变）。
-        # 默认设为 Hermes 的 "X-Hermes-Session-Key"；接标准 OpenAI/Ollama/LM Studio 时会被忽略，留空可关闭。
+        # 把 session_key 作为请求头发给 Hermes，用于长期记忆作用域（跨唤醒不变）；留空不发
         "session_header": "X-Hermes-Session-Key",
         # 一次唤醒一个服务端会话：进入连续对话时生成新 ID，每轮请求都带这个头，只发当前一句，
         # Hermes 从 state.db 读回本次唤醒的历史（含工具调用结果）；退出对话后丢掉，下次唤醒换新的。
-        # bridge 本地不保存历史。Hermes 要求配置 api_key 才接受这个头；接没有会话功能的后端时，
-        # 每轮都只有当前一句（没有上下文）。
+        # bridge 本地不保存历史。Hermes 要求配置 api_key 才接受这个头。
         "session_id_header": "X-Hermes-Session-Id",
         "system_prompt": "",
         "temperature": 0.7,
@@ -430,6 +428,22 @@ APP_CONFIG = {
         "rule_prompt": "注意：将结果处理成纯文字版，不要返回任何 markdown 格式，也不要包含任何代码块，并将字数控制在300字以内",
         "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送的，他看不到你回复的文字。字数控制在300字以内",
         "extra_body": {},
+    },
+    # 通用 OpenAI 兼容服务（OpenAI、Ollama、LM Studio 等 /v1/chat/completions）：before_wakeup 返回 "openai" 时使用
+    # 启用：OPENAI_ENABLE=1；环境变量 OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL 覆盖下面的值。
+    # 每轮只发当前一句（加 system_prompt），没有多轮上下文。连续对话的其他项（listening_light、input_mode、
+    # tts_provider、exit_keywords 等）和上面的 "hermes" 含义相同，需要时照着加
+    "openai": {
+        "base_url": "http://127.0.0.1:11434/v1",
+        "api_key": "",
+        "model": "qwen3:8b",
+        "listening_light": {"enabled": True},
+        "input_mode": "local_asr",
+        "system_prompt": "",
+        "stream": True,
+        "tts_provider": "xiaoai",
+        "tts_speaker": "xiaoai",
+        "rule_prompt": "注意：将结果处理成纯文字版，不要返回任何 markdown 格式，也不要包含任何代码块，并将字数控制在300字以内",
     },
     # QwenPaw Configuration
     # 需先启动 QwenPaw: qwenpaw app
@@ -468,7 +482,7 @@ APP_CONFIG = {
         "rule_prompt_for_skill": "注意：这条消息是主人通过小爱音箱发送给 QwenPaw 的，他看不到你回复的文字。字数控制在300字以内",
     },
     # 小爱管家（"你好缪斯"）唤醒词，需设置 MUSE_ENABLE=1
-    # 命中后由 before_wakeup 路由到 OpenAI 兼容服务（Hermes）连续对话，对话参数见上面的 "openai"
+    # 命中后由 before_wakeup 路由到 Hermes 连续对话，对话参数见上面的 "hermes"
     "muse": {
         # 规范唤醒词：始终参与匹配
         "wake_word": "你好缪斯",

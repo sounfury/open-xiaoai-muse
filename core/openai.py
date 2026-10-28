@@ -1,30 +1,36 @@
-"""OpenAI 兼容服务管理：连接 Hermes 等后端，收发对话消息并播放回复。
+"""OpenAI 兼容服务管理：收发对话消息并播放回复。
 
-This module talks to any OpenAI-compatible Chat Completions endpoint,
-including Hermes Agent API server mode.
+This module talks to any OpenAI-compatible Chat Completions endpoint
+(OpenAI, Ollama, LM Studio ...). Hermes Agent 有自己的会话和工具事件约定，
+见 core/hermes.py 的 HermesManager（继承这里）。
 
-会话由服务端管理：一次唤醒（连续对话从进入到退出）对应一个会话 ID，
-每轮请求只发当前这一句，并带 `X-Hermes-Session-Id`，Hermes 从自己的数据库读回
-这次唤醒里之前的对话和工具调用结果。bridge 本地不保存历史。
-下一次唤醒换新的会话 ID；跨唤醒的连续性靠 Hermes 长期记忆（`X-Hermes-Session-Key`）。
+每轮请求只发当前这一句（加上 system_prompt），bridge 本地不保存历史。
 """
 
 import asyncio
 import json
-import time
 import uuid
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 import aiohttp
 
+from core.backends import ChatBackend
 from core.utils.base import get_env
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
 
-class OpenAIManager:
+class OpenAIManager(ChatBackend):
     """Manager for OpenAI-compatible chat backends."""
 
+    NAME = "openai"
+    LABEL = "OpenAI"
+    CONFIG_SECTION = "openai"
+    ENABLE_ENV = ("OPENAI_ENABLE",)
+    # <前缀>_BASE_URL / _API_KEY / _MODEL 环境变量覆盖配置（密钥可以不写进仓库）
+    ENV_PREFIX = "OPENAI"
+    DEFAULT_SESSION_KEY = "agent:default:open-xiaoai-bridge"
     XIAOAI_TTS_SPEAKER = "xiaoai"
 
     _initialized = False
@@ -33,20 +39,12 @@ class OpenAIManager:
     _base_url = "http://127.0.0.1:8000/v1"
     _api_key = ""
     _model = "gpt-4o-mini"
-    _session_key = "agent:default:open-xiaoai-bridge"
-    # Optional header used to send session_key to the server (e.g. Hermes'
-    # "X-Hermes-Session-Key" for long-term memory scoping). Standard OpenAI /
-    # Ollama / LM Studio ignore the unknown header; set empty to disable.
-    _session_header = "X-Hermes-Session-Key"
-    # 一次唤醒一个会话：Hermes 按这个 ID 从 state.db 读回本次唤醒的历史（需要 api_key）
-    _session_id_header = "X-Hermes-Session-Id"
-    _conversation_id: str | None = None
-    _session_id_warned = False
+    _session_key = DEFAULT_SESSION_KEY
     _system_prompt = ""
     _temperature: float | None = None
     _max_tokens: int | None = None
     _timeout = 120
-    # 连续对话用流式回复（SSE）：第一句出来就播，还能收到 Hermes 的工具进度事件
+    # 连续对话用流式回复（SSE）：第一句出来就播
     _stream = True
     _extra_body: dict[str, Any] = {}
     _tts_provider: str | None = None
@@ -60,15 +58,27 @@ class OpenAIManager:
     _response_tts_speakers: dict[str, str | None] = {}
     last_error: str | None = None
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # 子类（HermesManager）要有自己的运行状态：类属性会继承，不重设的话
+        # 会读到父类的 _initialized，或者和父类共用同一个等待回复的 dict
+        cls._initialized = False
+        cls._reload_listener_registered = False
+        cls._enabled = False
+        cls._response_events = {}
+        cls._response_texts = {}
+        cls._response_tts_speakers = {}
+        cls.last_error = None
+
     @classmethod
     def initialize_from_config(cls, enabled: bool | None = None):
-        logger.info("[OpenAI] Initializing from config...")
+        logger.info(f"[{cls.LABEL}] Initializing from config...")
         cls.reload_from_config(enabled=enabled)
         cls._initialized = True
 
     @classmethod
     def reload_from_config(cls, enabled: bool | None = None):
-        """Refresh OpenAI settings from config.py."""
+        """Refresh settings from config.py."""
         config_manager = ConfigManager.instance()
         if not cls._reload_listener_registered:
             config_manager.add_reload_listener(
@@ -76,36 +86,27 @@ class OpenAIManager:
             )
             cls._reload_listener_registered = True
 
-        config = config_manager.get_app_config("openai", {})
+        config = config_manager.get_app_config(cls.CONFIG_SECTION, {}) or {}
 
-        if enabled is not None:
-            cls._enabled = enabled
-        else:
-            env_enabled = get_env("OPENAI_ENABLE")
-            cls._enabled = (
-                env_enabled.lower() in ("1", "true", "yes")
-                if env_enabled is not None
-                else False
-            )
+        cls._enabled = enabled if enabled is not None else cls.enabled_by_env()
 
-        # Env overrides (OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL) beat config.py
-        # so secrets can live in start-bridge.bat / .hermes_api_key without editing the repo.
+        # Env overrides (<ENV_PREFIX>_BASE_URL / _API_KEY / _MODEL) beat config.py
+        # so secrets can live in the start script / .hermes_api_key without editing the repo.
+        prefix = cls.ENV_PREFIX
         cls._base_url = str(
-            get_env("OPENAI_BASE_URL")
+            get_env(f"{prefix}_BASE_URL")
             or config.get("base_url", "http://127.0.0.1:8000/v1")
         ).rstrip("/")
         cls._api_key = str(
-            get_env("OPENAI_API_KEY")
+            get_env(f"{prefix}_API_KEY")
             or config.get("api_key", "")
             or ""
         )
         cls._model = str(
-            get_env("OPENAI_MODEL")
+            get_env(f"{prefix}_MODEL")
             or config.get("model", "gpt-4o-mini")
         )
-        cls._session_key = str(config.get("session_key", "agent:default:open-xiaoai-bridge"))
-        cls._session_header = str(config.get("session_header", "X-Hermes-Session-Key") or "").strip()
-        cls._session_id_header = str(config.get("session_id_header", "X-Hermes-Session-Id") or "").strip()
+        cls._session_key = str(config.get("session_key", cls.DEFAULT_SESSION_KEY))
         cls._system_prompt = str(config.get("system_prompt", "") or "")
         cls._timeout = int(config.get("response_timeout", 120))
         cls._stream = bool(config.get("stream", True))
@@ -136,7 +137,7 @@ class OpenAIManager:
 
         if cls._enabled:
             logger.info(
-                f"[OpenAI] Enabled, base_url={cls._base_url}, model={cls._model}"
+                f"[{cls.LABEL}] Enabled, base_url={cls._base_url}, model={cls._model}"
             )
 
     @classmethod
@@ -176,20 +177,18 @@ class OpenAIManager:
         """流式请求一轮对话，边收边产出事件：
 
         - ("text", str)：正文增量（delta.content；模型的 reasoning_content 不要）
-        - ("tool", dict)：Hermes 的 `event: hermes.tool.progress`，
-          {"tool", "emoji", "label", "toolCallId", "status": "running" | "completed"}
+        - 子类可以把带名字的 SSE 事件转成别的事件（Hermes：("tool", dict)，见 _sse_events）
 
-        历史由 Hermes 按会话 ID 保存（包括中途停止时已生成的部分），这里不记。
         请求失败时抛异常（last_error 同步设置）。
         """
         if not cls._initialized:
             cls.initialize_from_config()
         if not cls._enabled:
-            raise RuntimeError("OpenAI backend is disabled")
+            raise RuntimeError(f"{cls.LABEL} backend is disabled")
 
         payload = cls._build_payload(text, stream=True)
         headers = cls._headers()
-        module = f"OpenAI({cls._session_key})"
+        module = f"{cls.LABEL}({cls._session_key})"
         logger.user_speech(text, module=module)
         cls.last_error = None
         parts: list[str] = []
@@ -241,11 +240,12 @@ class OpenAIManager:
                         try:
                             obj = json.loads(data)
                         except ValueError:
-                            logger.debug(f"[OpenAI] Skipping non-JSON SSE data: {data[:80]}")
+                            logger.debug(f"[{cls.LABEL}] Skipping non-JSON SSE data: {data[:80]}")
                             continue
-                        if event == "hermes.tool.progress":
-                            if isinstance(obj, dict):
-                                yield ("tool", obj)
+                        extra = cls._sse_events(event, obj)
+                        if extra is not None:
+                            for item in extra:
+                                yield item
                             continue
                         if isinstance(obj, dict) and obj.get("error"):
                             raise RuntimeError(f"后端返回错误: {obj['error']}")
@@ -261,7 +261,7 @@ class OpenAIManager:
             raise
         except Exception as exc:
             cls.last_error = f"{type(exc).__name__}: {exc}"
-            logger.error(f"[OpenAI] Streaming chat completion failed: {cls.last_error}")
+            logger.error(f"[{cls.LABEL}] Streaming chat completion failed: {cls.last_error}")
             raise
         finally:
             reply = "".join(parts).strip()
@@ -269,32 +269,18 @@ class OpenAIManager:
                 if completed:
                     logger.ai_response(reply, module=module)
                 else:
-                    logger.info(f"[OpenAI] Reply stopped early: {reply[:60]}")
+                    logger.info(f"[{cls.LABEL}] Reply stopped early: {reply[:60]}")
 
     @classmethod
     def set_session_key(cls, session_key: str):
         logger.info(
-            f"[OpenAI] Session key updated: {cls._session_key!r} -> {session_key!r}"
+            f"[{cls.LABEL}] Session key updated: {cls._session_key!r} -> {session_key!r}"
         )
         cls._session_key = session_key
 
     @classmethod
-    def begin_conversation(cls) -> str:
-        """唤醒进入连续对话时调用：开一个新的服务端会话，本次唤醒的每一轮都用它。"""
-        cls._conversation_id = cls._new_session_id()
-        logger.info(f"[OpenAI] 新会话: {cls._conversation_id}")
-        return cls._conversation_id
-
-    @classmethod
-    def end_conversation(cls):
-        """退出连续对话（说再见、超时、被打断）时调用：丢掉会话 ID，下次唤醒换新的。"""
-        if cls._conversation_id:
-            logger.info(f"[OpenAI] 会话结束: {cls._conversation_id}")
-        cls._conversation_id = None
-
-    @classmethod
     def get_tts_speaker_for_session_key(cls, session_key: str | None = None) -> str | None:
-        target_session_key = session_key or cls._session_key
+        target_session_key = session_key or cls._session_key or ""
         return cls._session_tts_speakers.get(target_session_key) or cls._tts_speaker
 
     @classmethod
@@ -355,7 +341,7 @@ class OpenAIManager:
         if not cls._initialized:
             cls.initialize_from_config()
         if not cls._enabled:
-            logger.warning("[OpenAI] send called but backend is disabled")
+            logger.warning(f"[{cls.LABEL}] send called but backend is disabled")
             return None
 
         run_id = str(uuid.uuid4())
@@ -363,7 +349,7 @@ class OpenAIManager:
         cls._response_events[run_id] = loop.create_future()
         cls._response_texts[run_id] = ""
         cls._response_tts_speakers[run_id] = cls.get_tts_speaker_for_session_key()
-        logger.user_speech(text, module=f"OpenAI({cls._session_key})")
+        logger.user_speech(text, module=f"{cls.LABEL}({cls._session_key})")
         asyncio.create_task(cls._run_chat_completion(run_id, text))
         return run_id
 
@@ -371,13 +357,13 @@ class OpenAIManager:
     async def _wait_response(cls, run_id: str) -> str | None:
         event = cls._response_events.get(run_id)
         if not event:
-            logger.warning(f"[OpenAI] No event found for run {run_id}")
+            logger.warning(f"[{cls.LABEL}] No event found for run {run_id}")
             return None
         try:
             await asyncio.wait_for(event, timeout=cls._timeout)
             return cls._response_texts.pop(run_id, "") or None
         except asyncio.TimeoutError:
-            logger.warning(f"[OpenAI] Timeout waiting for response (runId: {run_id})")
+            logger.warning(f"[{cls.LABEL}] Timeout waiting for response (runId: {run_id})")
             return None
         finally:
             cls._response_events.pop(run_id, None)
@@ -390,10 +376,10 @@ class OpenAIManager:
             response_text = await cls._request_chat_completion(text)
             if response_text:
                 cls._response_texts[run_id] = response_text
-                logger.ai_response(response_text, module=f"OpenAI({cls._session_key})")
+                logger.ai_response(response_text, module=f"{cls.LABEL}({cls._session_key})")
         except Exception as exc:
             cls.last_error = f"{type(exc).__name__}: {exc}"
-            logger.error(f"[OpenAI] Chat completion failed: {cls.last_error}")
+            logger.error(f"[{cls.LABEL}] Chat completion failed: {cls.last_error}")
         finally:
             waiter = cls._response_events.get(run_id)
             if waiter and not waiter.done():
@@ -443,6 +429,12 @@ class OpenAIManager:
         return payload
 
     @classmethod
+    def _sse_events(cls, event: str | None, data: Any) -> list[tuple[str, Any]] | None:
+        """带名字的 SSE 事件（`event: xxx`）怎么处理：返回 None 按普通 chunk 解析正文，
+        返回列表则产出其中的事件并跳过这一条。通用 OpenAI 协议没有自定义事件。"""
+        return None
+
+    @classmethod
     def _extract_delta_text(cls, chunk: Any) -> str:
         """从 chat.completion.chunk 里取正文增量（不取 reasoning_content）。"""
         if not isinstance(chunk, dict):
@@ -469,25 +461,7 @@ class OpenAIManager:
         headers = {"Content-Type": "application/json"}
         if cls._api_key:
             headers["Authorization"] = f"Bearer {cls._api_key}"
-        # 长期记忆作用域（Hermes 的 X-Hermes-Session-Key），跨唤醒不变
-        if cls._session_header and cls._session_key:
-            headers[cls._session_header] = cls._session_key
-        # 会话 ID：连续对话里用本次唤醒的 ID；单次请求（API / 拦截小爱指令）每次新开一个，
-        # 避免相同的话被服务端按内容指纹并进同一个旧会话
-        if cls._session_id_header:
-            if cls._api_key:
-                headers[cls._session_id_header] = cls._conversation_id or cls._new_session_id()
-            elif not cls._session_id_warned:
-                cls._session_id_warned = True
-                logger.warning(
-                    "[OpenAI] 没有配置 api_key，Hermes 不接受 X-Hermes-Session-Id："
-                    "每轮只发当前一句，后端看不到本次唤醒前面的对话"
-                )
         return headers
-
-    @classmethod
-    def _new_session_id(cls) -> str:
-        return f"xiaoai-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
     @classmethod
     def _chat_completions_url(cls) -> str:
@@ -497,7 +471,7 @@ class OpenAIManager:
 
     @classmethod
     def _build_messages(cls, text: str) -> list[dict[str, str]]:
-        """只发当前这一句；之前的对话由服务端按会话 ID 读回。"""
+        """只发当前这一句（加上 system_prompt）。"""
         messages: list[dict[str, str]] = []
         if cls._system_prompt:
             messages.append({"role": "system", "content": cls._system_prompt})
@@ -539,7 +513,7 @@ class OpenAIManager:
                     tts_speaker=cls._response_tts_speakers.get(run_id),
                 )
             else:
-                logger.warning(f"[OpenAI] No response text received for run {run_id}")
+                logger.warning(f"[{cls.LABEL}] No response text received for run {run_id}")
         finally:
             cls._response_tts_speakers.pop(run_id, None)
 
@@ -560,7 +534,7 @@ class OpenAIManager:
             tts_speaker=resolved_tts_speaker,
             tts_speed=cls._tts_speed,
             playback_token=playback_token,
-            log_prefix="OpenAI",
+            log_prefix=cls.LABEL,
         )
 
     @classmethod
@@ -578,5 +552,5 @@ class OpenAIManager:
             configured_provider=provider,
             tts_speaker=tts_speaker,
             tts_speed=cls._tts_speed,
-            log_prefix="OpenAI",
+            log_prefix=cls.LABEL,
         )

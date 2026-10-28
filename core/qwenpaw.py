@@ -11,13 +11,19 @@ from typing import Any
 
 import aiohttp
 
-from core.utils.base import get_env
+from core.backends import ChatBackend
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
 
-class QwenPawManager:
+class QwenPawManager(ChatBackend):
     """Manager for QwenPaw HTTP chat backend."""
+
+    NAME = "qwenpaw"
+    LABEL = "QwenPaw"
+    CONFIG_SECTION = "qwenpaw"
+    ENABLE_ENV = ("QWENPAW_ENABLE",)
+    DEFAULT_SESSION_KEY = "agent:default:open-xiaoai-bridge"
 
     XIAOAI_TTS_SPEAKER = "xiaoai"
 
@@ -64,15 +70,7 @@ class QwenPawManager:
 
         config = config_manager.get_app_config("qwenpaw", {})
 
-        if enabled is not None:
-            cls._enabled = enabled
-        else:
-            env_enabled = get_env("QWENPAW_ENABLE")
-            cls._enabled = (
-                env_enabled.lower() in ("1", "true", "yes")
-                if env_enabled is not None
-                else False
-            )
+        cls._enabled = enabled if enabled is not None else cls.enabled_by_env()
 
         cls._base_url = str(config.get("base_url", "http://127.0.0.1:8088")).rstrip("/")
         cls._agent_id = str(config.get("agent_id", "default") or "default")
@@ -149,7 +147,7 @@ class QwenPawManager:
 
     @classmethod
     def get_tts_speaker_for_session_key(cls, session_key: str | None = None) -> str | None:
-        target_session_key = session_key or cls._session_key
+        target_session_key = session_key or cls._session_key or ""
         return cls._session_tts_speakers.get(target_session_key) or cls._tts_speaker
 
     @classmethod

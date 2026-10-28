@@ -23,6 +23,7 @@ echo ""
 XIAOZHI_ENABLED=$(printf '%s' "${XIAOZHI_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
 # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
 OPENCLAW_ENABLE_VALUE=$(printf '%s' "${OPENCLAW_ENABLE:-${OPENCLAW_ENABLED:-}}" | tr '[:upper:]' '[:lower:]')
+HERMES_ENABLE_VALUE=$(printf '%s' "${HERMES_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
 OPENAI_ENABLE_VALUE=$(printf '%s' "${OPENAI_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
 QWENPAW_ENABLE_VALUE=$(printf '%s' "${QWENPAW_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
 MUSE_ENABLE_VALUE=$(printf '%s' "${MUSE_ENABLE:-}" | tr '[:upper:]' '[:lower:]')
@@ -53,7 +54,7 @@ ONNX_LIB_DIR="$(uv run python -c "from pathlib import Path; import onnxruntime; 
     export DYLD_LIBRARY_PATH="${ONNX_LIB_DIR}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 # 3. 检查 KWS 相关模型和关键词文件
-if [[ "$XIAOZHI_ENABLED" =~ ^(1|true|yes)$ ]] || [[ "$OPENCLAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$OPENAI_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$QWENPAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$MUSE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
+if [[ "$XIAOZHI_ENABLED" =~ ^(1|true|yes)$ ]] || [[ "$HERMES_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$OPENCLAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$OPENAI_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$QWENPAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]] || [[ "$MUSE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]; then
     MODEL_DIR="core/models"
     REQUIRED_MODELS=("silero_vad.onnx" "encoder.onnx" "decoder.onnx" "joiner.onnx" "tokens.txt" "bpe.model")
     MISSING_MODELS=()

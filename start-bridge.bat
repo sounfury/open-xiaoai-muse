@@ -8,18 +8,18 @@ set API_SERVER_HOST=127.0.0.1
 set API_SERVER_PORT=9092
 REM AUDIO_INPUT=1: VAD/KWS models installed under core\models
 set AUDIO_INPUT_ENABLE=1
-REM MUSE_ENABLE=1: "ni hao miu si" wake words (KWS + XiaoAI ASR), routed to the OpenAI/Hermes flow
+REM MUSE_ENABLE=1: "ni hao miu si" wake words (KWS + XiaoAI ASR), routed to the Hermes flow
 set MUSE_ENABLE=1
 
-REM Hermes (OpenAI-compatible continuous dialogue)
-set OPENAI_ENABLE=1
-set OPENAI_BASE_URL=https://hermes.oci.sounfury.top/v1
-set OPENAI_MODEL=muse-home
-set OPENAI_API_KEY=
+REM Hermes Agent (continuous dialogue)
+set HERMES_ENABLE=1
+set HERMES_BASE_URL=https://hermes.oci.sounfury.top/v1
+set HERMES_MODEL=muse-home
+set HERMES_API_KEY=
 if exist .hermes_api_key (
-  set /p OPENAI_API_KEY=<.hermes_api_key
+  set /p HERMES_API_KEY=<.hermes_api_key
 )
-if not defined OPENAI_API_KEY (
+if not defined HERMES_API_KEY (
   echo [OpenXiaoAI] ERROR: .hermes_api_key missing or empty >> logs\bridge-autostart.log
 )
 

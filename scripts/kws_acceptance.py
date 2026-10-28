@@ -537,7 +537,7 @@ def cmd_dialog(args) -> int:
     settings = load_settings(getter)
     wake_words = settings.wake_words
     names = [w for w in (getter("wakeup.keywords", []) or []) if isinstance(w, str)] + wake_words
-    exit_words = getter("openai.exit_keywords", None)
+    exit_words = getter("hermes.exit_keywords", None)
     exit_words = list(DEFAULT_EXIT_WORDS) if exit_words is None else exit_words
     tail_ms = args.tail if args.tail is not None else getter("conversation.keyword_tail_ms", 100)
     lookback_ms = args.lookback if args.lookback is not None else getter("barge_in.speech_lookback_ms", 350)

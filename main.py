@@ -35,11 +35,12 @@ main_app_instance = None
 # 启动配置（从环境变量读取）
 connect_xiaozhi = False  # 是否连接小智 AI
 enable_api_server = False  # 是否开启 API Server
+enabled_backends: tuple[str, ...] = ()  # 启用的外部对话后端（core/backends.py 的路由名）
 
 
 def setup_config():
     """解析命令行参数和环境变量"""
-    global connect_xiaozhi, enable_api_server, enable_xiaozhi, enable_openclaw, enable_openai, enable_qwenpaw
+    global connect_xiaozhi, enable_api_server, enable_xiaozhi, enabled_backends
 
     parser = argparse.ArgumentParser(description="小爱音箱接入 Open XiaoAI")
     parser.parse_args()
@@ -47,29 +48,20 @@ def setup_config():
     # 从环境变量读取配置
     enable_api_server = os.environ.get("API_SERVER_ENABLE", "").lower() in ("1", "true", "yes")
     enable_xiaozhi = os.environ.get("XIAOZHI_ENABLE", "").lower() in ("1", "true", "yes")
-    # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
-    openclaw_env = os.environ.get("OPENCLAW_ENABLE") or os.environ.get("OPENCLAW_ENABLED") or ""
-    enable_openclaw = openclaw_env.lower() in ("1", "true", "yes")
-    enable_openai = os.environ.get("OPENAI_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
-    enable_qwenpaw = os.environ.get("QWENPAW_ENABLE", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    # 外部对话后端：HERMES_ENABLE / OPENAI_ENABLE / OPENCLAW_ENABLE / QWENPAW_ENABLE（见 core/backends.py）
+    from core.backends import all_backends
+
+    backends = all_backends()
+    enabled_backends = tuple(backend.NAME for backend in backends if backend.enabled_by_env())
 
     # 计算 AUDIO_INPUT_ENABLE 实际生效的值（默认 1/true）
     audio_input_enabled = os.environ.get("AUDIO_INPUT_ENABLE", "1").strip().lower() in ("1", "true", "yes", "on")
     
-    logger.info(f"[Main] ENV: XIAOZHI_ENABLE={os.environ.get('XIAOZHI_ENABLE') or 'not set (disabled)'}, "
-                f"API_SERVER_ENABLE={os.environ.get('API_SERVER_ENABLE') or 'not set (disabled)'}, "
-                f"OPENCLAW_ENABLE={os.environ.get('OPENCLAW_ENABLE') or os.environ.get('OPENCLAW_ENABLED') or 'not set (disabled)'}, "
-                f"OPENAI_ENABLE={os.environ.get('OPENAI_ENABLE') or 'not set (disabled)'}, "
-                f"QWENPAW_ENABLE={os.environ.get('QWENPAW_ENABLE') or 'not set (disabled)'}, "
-                f"AUDIO_INPUT_ENABLE={1 if audio_input_enabled else 0}")
+    env_names = ["XIAOZHI_ENABLE", "API_SERVER_ENABLE"] + [name for b in backends for name in b.ENABLE_ENV]
+    env_text = ", ".join(
+        f"{name}={os.environ.get(name) or 'not set (disabled)'}" for name in env_names
+    )
+    logger.info(f"[Main] ENV: {env_text}, AUDIO_INPUT_ENABLE={1 if audio_input_enabled else 0}")
     logger.info(f"[Main] Using config file: {config_path}")
 
     # 打印模块启用情况
@@ -79,18 +71,11 @@ def setup_config():
         f"小智 AI Bridge: {'启用' if enable_xiaozhi else '禁用'}",
         module="Main",
     )
-    logger.info(
-        f"OpenClaw Bridge: {'启用' if enable_openclaw else '禁用'}",
-        module="Main",
-    )
-    logger.info(
-        f"OpenAI: {'启用' if enable_openai else '禁用'}",
-        module="Main",
-    )
-    logger.info(
-        f"QwenPaw: {'启用' if enable_qwenpaw else '禁用'}",
-        module="Main",
-    )
+    for backend in backends:
+        logger.info(
+            f"{backend.LABEL}: {'启用' if backend.NAME in enabled_backends else '禁用'}",
+            module="Main",
+        )
     from core.muse import is_muse_enabled
 
     logger.info(
@@ -109,14 +94,12 @@ def run_services(xiaozhi_mode: bool = False):
     Args:
         xiaozhi_mode: 是否启动小智 AI 完整服务（包括 VAD/KWS/GUI）
     """
-    global main_app_instance, enable_api_server, enable_openclaw, enable_openai, enable_qwenpaw
+    global main_app_instance, enable_api_server, enabled_backends
 
     # 统一使用 MainApp 管理所有服务
     main_app_instance = MainApp.instance(
         enable_xiaozhi=xiaozhi_mode,
-        enable_openclaw=enable_openclaw,
-        enable_openai=enable_openai,
-        enable_qwenpaw=enable_qwenpaw,
+        backends=enabled_backends,
     )
     main_app_instance.run(enable_api_server=enable_api_server)
 

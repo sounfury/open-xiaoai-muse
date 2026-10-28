@@ -186,6 +186,7 @@ class MuseSettingsTest(unittest.TestCase):
             "XIAOZHI_ENABLE": "",
             "OPENCLAW_ENABLE": "",
             "OPENCLAW_ENABLED": "",
+            "HERMES_ENABLE": "",
             "OPENAI_ENABLE": "",
             "QWENPAW_ENABLE": "",
         }
@@ -220,24 +221,24 @@ class BeforeWakeupRoutingTest(unittest.IsolatedAsyncioTestCase):
         result = await self.config.before_wakeup(speaker, text, source, app)
         return result, speaker.events, app
 
-    async def test_muse_kws_wake_word_routes_to_openai(self):
+    async def test_muse_kws_wake_word_routes_to_hermes(self):
         with env(MUSE_ENABLE="1"):
             result, events, _ = await self.route("你好缪斯", "kws")
-        self.assertEqual(result, "openai")
+        self.assertEqual(result, "hermes")
         self.assertEqual(events, [])
 
-    async def test_muse_xiaoai_text_routes_to_openai_and_suppresses_native(self):
+    async def test_muse_xiaoai_text_routes_to_hermes_and_suppresses_native(self):
         for text in ("你好缪斯，我今晚想洗澡", "你好缪斯我今晚想洗澡", "你好缪斯"):
             with self.subTest(text=text), env(MUSE_ENABLE="1"):
                 result, events, _ = await self.route(text, "xiaoai")
-                self.assertEqual(result, "openai")
+                self.assertEqual(result, "hermes")
                 self.assertEqual(events, [("abort",)])
 
     async def test_native_suppress_modes(self):
         self.app_config["muse"]["native_suppress"] = "none"
         with env(MUSE_ENABLE="1"):
             result, events, _ = await self.route("你好缪斯，开灯", "xiaoai")
-        self.assertEqual((result, events), ("openai", []))
+        self.assertEqual((result, events), ("hermes", []))
 
         self.app_config["muse"]["native_suppress"] = "dialog"
         xiaoai = types.SimpleNamespace(
@@ -245,7 +246,7 @@ class BeforeWakeupRoutingTest(unittest.IsolatedAsyncioTestCase):
         )
         with env(MUSE_ENABLE="1"), mock.patch.object(muse, "get_xiaoai", return_value=xiaoai):
             result, events, _ = await self.route("你好缪斯，开灯", "xiaoai")
-        self.assertEqual((result, events), ("openai", []))
+        self.assertEqual((result, events), ("hermes", []))
         xiaoai._suppress_dialog.assert_awaited_once_with("dialog-9", "小爱管家接管")
 
     async def test_native_and_existing_routes_unchanged(self):

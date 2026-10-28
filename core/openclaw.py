@@ -37,13 +37,21 @@ import websockets
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from core.backends import ChatBackend
 from core.utils.base import get_env
 from core.utils.config import ConfigManager
 from core.utils.logger import logger
 
 
-class OpenClawManager:
+class OpenClawManager(ChatBackend):
     """Manager for OpenClaw connection and messaging."""
+
+    NAME = "openclaw"
+    LABEL = "OpenClaw"
+    CONFIG_SECTION = "openclaw"
+    # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
+    ENABLE_ENV = ("OPENCLAW_ENABLE", "OPENCLAW_ENABLED")
+    DEFAULT_SESSION_KEY = "agent:main:open-xiaoai-bridge"
 
     _instance = None
     _initialized = False
@@ -128,7 +136,7 @@ class OpenClawManager:
         config = config_manager.get_app_config("openclaw", {})
         cfg_url = config.get("url", "ws://localhost:4399")
         cfg_token = config.get("token", "")
-        cfg_session = config.get("session_key", "agent:main:open-xiaoai-bridge")
+        cfg_session = config.get("session_key", cls.DEFAULT_SESSION_KEY)
         cfg_identity_path = config.get("identity_path")
         cfg_tts_provider = config.get("tts_provider")
         cfg_tts_speaker = config.get("tts_speaker", None)
@@ -140,15 +148,7 @@ class OpenClawManager:
         cfg_rule_prompt_for_skill = config.get("rule_prompt_for_skill", "")
 
         # Enable/disable: parameter > environment variable > default (False)
-        if enabled is not None:
-            cls._enabled = enabled
-        else:
-            # 兼容 OPENCLAW_ENABLE (新) 和 OPENCLAW_ENABLED (旧)
-            env_enabled = get_env("OPENCLAW_ENABLE") or get_env("OPENCLAW_ENABLED")
-            if env_enabled is not None:
-                cls._enabled = env_enabled.lower() in ("1", "true", "yes")
-            else:
-                cls._enabled = False  # Default to disabled if no env var set
+        cls._enabled = enabled if enabled is not None else cls.enabled_by_env()
 
         # TTS config: only from config file
         cls._tts_provider = (

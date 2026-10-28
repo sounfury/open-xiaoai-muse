@@ -2,7 +2,7 @@
 
   - KWS 命中缪斯唤醒词（muse.kws_wake_words，如"你好缪斯" / "hi muse"），
     或小爱原生 ASR 文本以任一唤醒词开头（muse.wake_words，含同音字和单独的"缪斯" / "muse"）
-    → config.before_wakeup 返回 "openai"，进入 OpenAI 兼容服务（Hermes）连续对话
+    → config.before_wakeup 返回 "hermes"，进入 Hermes 连续对话
   - MUSE_ENABLE=1 才生效：关闭时 match_muse_text / kws_wake_words 都返回空
 
 本模块顶层只依赖标准库，不导入 open_xiaoai_server，

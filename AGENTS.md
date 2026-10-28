@@ -19,10 +19,13 @@ open-xiaoai-muse/
 │   ├── xiaoai.py                  # XiaoAI 设备接入 / 事件桥接
 │   ├── xiaoai_conversation.py     # 小爱连续对话策略
 │   ├── xiaozhi.py                 # 小智 AI WebSocket 协议客户端
+│   ├── backends.py                # 外部对话后端：ChatBackend 统一接口 + 注册表（路由名 → 后端类）
+│   ├── hermes.py                  # Hermes Agent 后端（OpenAI 兼容 + 服务端会话、长期记忆头、工具事件）
+│   ├── openai.py                  # 通用 OpenAI 兼容后端（Ollama / LM Studio 等，HermesManager 的父类）
 │   ├── openclaw.py                # OpenClaw 网关客户端（连接、消息、TTS 播放）
-│   ├── external_conversation.py   # 外部后端连续对话基类（VAD → ASR → Agent → TTS，播报中打断）
-│   ├── openclaw_conversation.py   # OpenClaw 连续对话循环（VAD → ASR → Agent → TTS）
-│   ├── wakeup_session.py          # 小智唤醒会话状态机
+│   ├── qwenpaw.py                 # QwenPaw HTTP 后端
+│   ├── external_conversation.py   # 外部后端连续对话（VAD → ASR → 后端 → TTS，播报中打断），所有后端共用
+│   ├── wakeup_session.py          # 唤醒分发：before_wakeup 路由到小智或外部后端连续对话
 │   ├── muse.py                    # 小爱管家（你好缪斯）唤醒词：集合、文本解析、KWS 子集、拦截原生小爱
 │   ├── ref.py                     # 全局引用注册表（get/set 依赖注入）
 │   ├── models/                    # 模型文件（KWS/VAD/ASR，.gitignore 排除）
@@ -77,12 +80,12 @@ open-xiaoai-muse/
 
 应用主控制器，单例模式，管理全部服务生命周期。
 
-- `instance(enable_xiaozhi, enable_openclaw)` → 单例获取
+- `instance(enable_xiaozhi, backends)` → 单例获取；`backends` 是启用的后端路由名（main.py 按 `HERMES_ENABLE` 等环境变量生成）
 - `run(enable_api_server)` → 启动各服务
 - `set_device_state(state)` → 管理设备状态（IDLE / LISTENING / SPEAKING / CONNECTING）
 - `send_text(text)` → 发送文本到小智
-- `send_to_openclaw(text, wait_response)` → 发送消息到 OpenClaw（返回 run_id 或回复文本）
-- `send_to_openclaw_and_play_reply(text, wait_response)` → 发送并 TTS 播放回复
+- `send_to_backend(name, text, wait_response, play_reply)` → 单次发送到外部后端（返回 run_id 或回复文本）；`send_to_hermes` / `send_to_openclaw` / `*_and_play_reply` 等是快捷方法
+- `set_backend_session_key(name, key)` → 运行时切换后端 session_key（每次唤醒前恢复默认）
 - `schedule(callback)` → 主线程任务队列
 - `shutdown()` → 优雅关闭
 
@@ -122,6 +125,21 @@ open-xiaoai-muse/
 - 只负责协议收发，不负责唤醒策略和连续对话策略
 - `session_id` 必须由服务端消息更新，不能长期使用空值发送控制消息
 
+### 外部对话后端 (core/backends.py)
+
+Hermes / OpenAI / OpenClaw / QwenPaw 都继承 `ChatBackend`（classmethod 单例风格），在 `_REGISTRY` 里按路由名注册；`before_wakeup` 返回的字符串、`after_wakeup` 的 `source`、配置段名和后端一一对应。
+
+- 每个后端声明 `NAME`（路由名）、`LABEL`（日志名）、`CONFIG_SECTION`、`ENABLE_ENV`、`DEFAULT_SESSION_KEY`
+- 必须实现：`initialize_from_config` / `connect` / `close` / `is_enabled` / `is_connected` / `set_session_key` / `get_tts_speaker_for_session_key` / `send` / `send_and_play_reply` / `_send_and_track` / `_wait_response` / `_play_response_with_tts`
+- 可选：`supports_streaming()` + `stream_reply(text)`（流式）、`begin_conversation()` / `end_conversation()`（服务端会话）
+- 对外只用公开方法：`with_rule_prompt` / `submit` + `wait_reply` / `stream_reply` / `play_text` / `tts_provider` / `get_session_key` / `reset_session_key`
+
+**边界约束**:
+- 连续对话、唤醒分发、MainApp 只通过 `ChatBackend` 的公开方法使用后端，不访问 `_rule_prompt` 等私有成员
+- 新增后端：写一个继承 `ChatBackend` 的类，在 `_REGISTRY` 加一行；不要在 wakeup_session / app 里加 if/elif
+- `HermesManager` 继承 `OpenAIManager`：类属性会继承，子类的运行状态（`_initialized`、等待回复的 dict）由 `OpenAIManager.__init_subclass__` 重设，新增类级可变状态时要一起加进去
+- Hermes 的 `session_key`（默认 `agent:default:open-xiaoai-bridge`）是长期记忆作用域，改了就读不到以前的记忆
+
 ### OpenClawManager (core/openclaw.py)
 
 OpenClaw 网关客户端，管理 WebSocket 连接、消息分发、自动重连、TTS 播放。
@@ -145,12 +163,12 @@ OpenClaw 网关客户端，管理 WebSocket 连接、消息分发、自动重连
 - `client.mode`: 必须是预定义常量
 - `session_key`: 只从 config.py 读取
 
-### OpenClawConversationController (core/openclaw_conversation.py)
+### ExternalConversationController (core/external_conversation.py)
 
-OpenClaw 连续对话控制器。唤醒词触发后进入独立的 VAD → ASR → OpenClaw → TTS 循环。
+外部后端连续对话控制器，所有后端共用：`ExternalConversationController(backend)`，配置段、日志名、`after_wakeup` 的 source 都取自 backend。唤醒词触发后进入独立的 VAD → ASR → 后端 → TTS 循环。
 
-- `start()` → 进入对话模式
-- `stop()` → 退出对话
+- `start()` → 进入对话模式（调 `backend.begin_conversation()`）
+- `stop()` → 退出对话（调 `backend.end_conversation()`）
 - `is_active()` → 状态查询
 
 **对话循环** (`_run_one_turn`):
@@ -158,7 +176,7 @@ OpenClaw 连续对话控制器。唤醒词触发后进入独立的 VAD → ASR �
 2. 录制完整语音（VAD 帧 hook）
 3. SherpaASR 离线识别
 4. 退出关键词检测
-5. 发送到 OpenClaw
+5. 发送到后端（`_ask_backend`：流式时返回 `ReplyStream`，否则 `submit` → 播"咻" → `wait_reply`）
 6. TTS 播放回复（等待完成，或被唤醒词打断）
 7. 恢复监听
 
@@ -169,19 +187,19 @@ OpenClaw 连续对话控制器。唤醒词触发后进入独立的 VAD → ASR �
 - 回采不在线时退回旧方式：`stop_recording` → kill 远端 arecord → 麦克风物理静音，TTS 和提示音都在关麦期间播放
 - `VAD.resume()` 会自动 `_reset_state()` + `input_bytes.clear()`，清除旧的 `speech_frames` 和音频流缓冲（带 `preroll_from` 时再从 `GlobalStream` 历史补回）
 
-**流式回复和分段播报**（后端 `supports_streaming()` 为真时，目前只有 OpenAI / Hermes）:
-- `OpenAIManager.stream_reply(text)` 产出 `("text", delta)` / `("tool", hermes.tool.progress)`；只取 `delta.content`，不取 `reasoning_content`
-- 会话由 Hermes 管理：`OpenAIConversationController` 进入连续对话时 `OpenAIManager.begin_conversation()` 生成新会话 ID，本次唤醒每轮请求带 `X-Hermes-Session-Id`、只发当前一句，Hermes 从 state.db 读回本次唤醒的历史（含工具调用结果和读过的 skill）；退出（再见 / 超时 / 被打断）时 `end_conversation()` 丢掉。bridge 本地不存历史；单次请求（API / 拦截小爱指令）每次一个新 ID。会话 ID 需要 `api_key`（Hermes 的 API_SERVER_KEY）
+**流式回复和分段播报**（后端 `supports_streaming()` 为真时，目前是 Hermes / OpenAI）:
+- `OpenAIManager.stream_reply(text)` 产出 `("text", delta)`；`HermesManager` 通过 `_sse_events` 把 `event: hermes.tool.progress` 转成 `("tool", dict)`；只取 `delta.content`，不取 `reasoning_content`
+- 会话由 Hermes 管理：进入连续对话时 `HermesManager.begin_conversation()` 生成新会话 ID，本次唤醒每轮请求带 `X-Hermes-Session-Id`、只发当前一句，Hermes 从 state.db 读回本次唤醒的历史（含工具调用结果和读过的 skill）；退出（再见 / 超时 / 被打断）时 `end_conversation()` 丢掉。bridge 本地不存历史；单次请求（API / 拦截小爱指令）每次一个新 ID。会话 ID 需要 `api_key`（Hermes 的 API_SERVER_KEY）
   - 不要再把历史放进 `messages`：Hermes 对重复 `skill_view` 只回“内容未变”，客户端自己带纯文字历史时模型看不到 skill 正文，也看不到之前的工具调用
 - `ReplyStream` 在后台读流（创建即发请求，和"咻"并行）；`_speak_stream` 用 `core/services/tts/segmenter.py` 切段，送进 `core/services/tts/segment_player.py`
 - `tts_speaker == "xiaoai"`：`XiaoAINativeSegmentPlayer`（`mibrain text_to_speech save=1` 预生成 + `miplayer -f` 依次播放，临时文件 `/tmp/open-xiaoai-bridge-tts-*.mp3`）；其他 provider：`CallbackSegmentPlayer` 按段调 `_play_tts`
-- 工具开始、还没有正文时念一次 `openai.tool_filler`（"稍等" / "我查一下"）
+- 工具开始、还没有正文时念一次 `hermes.tool_filler`（"稍等" / "我查一下"；配置段跟随后端）
 - 打断覆盖整个回复过程（包括后端还在思考）：取消 `_speak` 任务 → `player.abort()`（`killall miplayer`、删临时文件）+ `ReplyStream.close()`（断开 HTTP）
 - 分段播放一段都没播成（`player.error` 且 `played == 0`）时，整段退回 `_play_tts`
-- 回复里调用了 `openai.end_after_tools`（默认 `spotify_playback`）里的工具时，回答完直接结束对话（不播告别语）：对话中途才放的歌没被 music_duck 压低，接着听会把歌声当成人声，对话永远结束不了。Hermes 工具事件不带参数，分不出播放和查询，一律结束
+- 回复里调用了 `hermes.end_after_tools`（默认 `spotify_playback`）里的工具时，回答完直接结束对话（不播告别语）：对话中途才放的歌没被 music_duck 压低，接着听会把歌声当成人声，对话永远结束不了。Hermes 工具事件不带参数，分不出播放和查询，一律结束
 
 **灯效**（`core/services/conversation_light.py`）:
-- OpenAI / 缪斯会话调用 `_light_state(state)`，和原生小爱一致：提示音 / 回答 `speaking` 3（跟播放音量起伏，miplayer 自带）→ `listening` / `hearing` 41（短白灯，随你的音量变宽）→ `thinking` 2 → `speaking` 3 → `off`；不再用黄灯 9
+- Hermes / 缪斯会话调用 `_light_state(state)`，和原生小爱一致：提示音 / 回答 `speaking` 3（跟播放音量起伏，miplayer 自带）→ `listening` / `hearing` 41（短白灯，随你的音量变宽）→ `thinking` 2 → `speaking` 3 → `off`；不再用黄灯 9
 - 聆听灯随音量（`core/services/light_level.py`，配置 `conversation.light_level`）：音箱 `vis` 从 `/tmp/mic_audio.fifo` 读 48 kHz PCM 算音量、UDP 发给 `ledd`；`ubus call mic_audio set_event '{"event":1,"value":1}'` 切到麦克风、`value:2` 切回播放。bridge 开 TCP 4400，音箱 `nc` 连进来写 FIFO；bridge 只送"同响度的噪声"，不送语音
   - `vis` 要求输入不能明显慢于实时，否则关掉重开 FIFO，`nc` 写入 EPIPE 被杀：bridge 用自己的时钟每 110 ms 发一帧 9600 字节（不跟麦克风包走），音箱端 `nc` 被杀自动重连
   - 不能比实时快太多，否则 FIFO 积压成延迟；当前保留小幅噪声作为静音底值；噪声 RMS 约 8000 时实测 `vis` 偶发输出 0，具体原因未确认
@@ -205,23 +223,23 @@ OpenClaw 连续对话控制器。唤醒词触发后进入独立的 VAD → ASR �
 
 ### WakeupSessionManager (core/wakeup_session.py)
 
-小智唤醒会话状态机，协调 KWS → VAD → 小智/OpenClaw 的唤醒流程。
+小智唤醒会话状态机，协调 KWS → VAD → 小智 / 外部后端的唤醒流程。同一时间最多一个外部后端连续对话（`_controller` / `_controller_task`）。
 
-- `wakeup(text, source)` → 处理唤醒（调用 `before_wakeup` 钩子，路由到 XiaoZhi 或 OpenClaw）
+- `wakeup(text, source)` → 处理唤醒（调用 `before_wakeup` 钩子，路由到 XiaoZhi 或 `core/backends.py` 里注册的后端）
 - `wait_next_step(timeout)` → 异步等待状态变化（带待决状态缓冲）
 - `update_step(step, step_data)` → 更新步骤
 - 事件回调：`on_interrupt()`, `on_wakeup()`, `on_tts_start()`, `on_tts_end()`, `on_speech()`, `on_silence()`
-- `on_interrupt()` → 小爱唤醒时：cancel OpenClaw task、停止设备音频播放、恢复录音通道、stop XiaoAI conversation
+- `on_interrupt()` → 小爱唤醒时：cancel 外部后端对话 task、停止设备音频播放、恢复录音通道、stop XiaoAI conversation
 
 **路由规则**（`before_wakeup` 返回值）:
 - `"xiaozhi"` → 走小智流程
-- `"openclaw"` → 走 OpenClaw 连续对话
-- `"openai"` → 走 OpenAI 兼容服务（Hermes）连续对话；"你好缪斯"唤醒词（`MUSE_ENABLE=1`）也路由到这里
-- `"qwenpaw"` → 走 QwenPaw 连续对话
+- `"hermes"` → 走 Hermes 连续对话；"你好缪斯"唤醒词（`MUSE_ENABLE=1`）路由到这里
+- `"openai"` / `"openclaw"` / `"qwenpaw"` → 对应后端的连续对话
+- 其他字符串或后端没启用 → 记错误日志，不进入对话
 - `None` → 不处理（用户自行处理）
 
 **小爱管家（muse）边界约束**:
-- `core/muse.py` 只负责唤醒词（匹配、KWS 子集、拦截原生小爱），不再有自己的请求链路；对话由 `"openai"` 路由负责
+- `core/muse.py` 只负责唤醒词（匹配、KWS 子集、拦截原生小爱），不再有自己的请求链路；对话由 `"hermes"` 路由负责
 - `core/muse.py` 顶层不能导入 `open_xiaoai_server`（config.py / 测试会直接导入）
 
 **边界约束**:
@@ -255,7 +273,7 @@ OpenClaw 连续对话控制器。唤醒词触发后进入独立的 VAD → ASR �
 - `run_shell(command, timeout)` → RPC shell
 
 **边界约束**:
-- `stop_device_audio()` 只负责"停播放"，不负责恢复录音；`start_recording()` 属于会话层恢复逻辑，应由 `WakeupSessionManager` / `OpenClawConversationController` 等上层按场景决定
+- `stop_device_audio()` 只负责"停播放"，不负责恢复录音；`start_recording()` 属于会话层恢复逻辑，应由 `WakeupSessionManager` / `ExternalConversationController` 等上层按场景决定
 
 ### APIServer (core/services/api_server.py)
 
