@@ -1,6 +1,6 @@
 # 待办：音频前端用 Rust 重写
 
-> 状态：待评估，还没开始。最后更新：2026-10-28。
+> 状态：第 0 步已测；第 1、2 步代码完成、离线对比通过，等音箱验收。最后更新：2026-10-28。
 > 范围：从"收到音箱音频包"到"得到干净的单声道和多麦分离结果"这一段（回声消除、高通、多麦分离、聆听灯推流）。
 > 会话控制、后端请求、TTS、灯效、设备命令留在 Python；以后做 Android App 时这部分用 Kotlin 写。
 
@@ -16,29 +16,52 @@
 
 ### 第 0 步：测量，确认值得做
 
-- [ ] 在平板上跑 `scripts/perf_bench.py --seconds 60`，记下各阶段每帧耗时（平均 / p95 / 最大）和整条链路实时率（目前约 0.52，熄屏 0.56）
-- [ ] 看时间分布：回声消除（主麦 1 路 + 多麦 3 路）、多麦分离、唤醒检测（4 路）各占多少
-- [ ] 判断：如果大头在唤醒检测（sherpa-onnx 内部，本来就是 C++），重写前端收益有限，本文档降级为"做 App 时再做"
+- [x] 在平板上跑 `scripts/perf_bench.py --seconds 60`，记下各阶段每帧耗时（平均 / p95 / 最大）和整条链路实时率（目前约 0.52，熄屏 0.56）
+- [x] 看时间分布：回声消除（主麦 1 路 + 多麦 3 路）、多麦分离、唤醒检测（4 路）各占多少
+- [x] 判断：如果大头在唤醒检测（sherpa-onnx 内部，本来就是 C++），重写前端收益有限，本文档降级为"做 App 时再做"
 - [ ] 准备对比用的录音，存进 `tests/data/`（不进 Git）：
-  - 主麦：`ECHO_REF_DUMP=<文件.wav>` 启动 bridge，录一段播报中说话的 [麦克风, 回采] 双声道
-  - 多麦：`scripts/multimic_record.py` 录 4 声道（3 麦 + 回采），远场、电视噪声各一段
+  - [x] 播报中的真实回声：`tests/data/aec/tts_echo_4ch.wav`（multimic_record.py 录 40 秒，其间 API 播一段 TTS；ch0～ch2 + 回采，主麦和多麦的回声消除都能用）
+  - [ ] 播报中有人说话的一段（需要有人配合）
+  - [ ] 多麦远场、电视噪声各一段（第 3 步用）
+
+**测量结果（2026-10-28，平板，bridge 同时在跑）**
+
+单组件（`perf_bench.py` 新加的单线程测量，按单核占用）：回声消除每路 2.5%、AuxIVA 4.5%、高通 0.2%、
+唤醒检测每路 13%（VAD 门控、一直说话；不门控 23%）、VAD 0.6%。线上组合合计：前端 15%、唤醒 52%，
+**唤醒检测占 77%**。
+
+运行中 bridge 各线程 60 秒 CPU（`scripts/thread_cpu.sh`，用 py-spy 对应线程名）：多麦 3 路唤醒 69%、
+主麦唤醒 17%、`multimic-conn`（回声消除 ×3 + 高通 + IVA）30.6%、原生线程（含主麦回声消除）4.7%，
+合计 122%。前端约占 29%。
+
+GIL：`scripts/kws_gil_bench.py` 显示 sherpa 解码时释放 GIL（4 线程加速 2.8 倍，CPU 379%），旁边再加一个
+一直在跑的 numpy 回声消除线程只慢 5%。`perf_bench.py --precompute-front`（前端先算好、不占 GIL 的上限）
+实时率 0.628 → 0.539，每帧唤醒 17.8 → 16.8 ms。所以前端抢 GIL 对唤醒的拖慢不大，"一直说话"的瓶颈是唤醒本身。
+
+判断：大头在唤醒检测。但前端那 30% 左右的核是 24 小时一直在烧的，第 1、2 步工作量小、还能去掉 scipy，
+照做；第 3 步（IVA，4.5%）等第 1 步上线后再看。**更大的收益在唤醒检测本身**（另记一条，
+见文末"唤醒检测的开销"）。
 
 ### 第 1 步：回声消除 `core/services/audio/aec.py`（157 行，收益最高）
 
-- [ ] 在 `native/` 加模块（如 `src/dsp/aec.rs`），用 rustfft 实现 `SubbandEchoCanceller`，参数和默认值保持一致：`n_fft=1024`、`hop=256`、`taps=8`、`tau_s=3.0`、`solve_every=4`、`warmup_frames=16`、`history_s=2.0`
-- [ ] 保留本项目加的两道保护：前 `warmup_frames` 帧只学习不相减；每个频点输出幅度不超过原麦克风
-- [ ] 每 4 帧解一次 513 个 8×8 复数线性方程（带 trace 正则），手写或用 nalgebra
-- [ ] 输入输出缓冲、最近 2 秒的输出 / 回声历史改成环形缓冲，不再每次分配
-- [ ] PyO3 暴露同名类和接口：`process(mic, ref) -> 干净音频`、`delay`、`ref_active`、`reduction_db()`、`near_end_ratio_db(window_s, slice_s)`；计算时 `allow_threads`
-- [ ] 离线对比：同一段录音跑 Python 版和 Rust 版，逐样本误差（相对 RMS）在 1e-6 量级；`near_end_ratio_db` 结果一致
-- [ ] 加开关（如 `barge_in.echo_canceller.impl = "python" | "rust"`），默认先用 Python，验收后再切
+- [x] 在 `native/` 加模块 `src/dsp/aec.rs`，用 realfft（rustfft）实现 `SubbandEchoCanceller`，参数和默认值保持一致：`n_fft=1024`、`hop=256`、`taps=8`、`tau_s=3.0`、`solve_every=4`、`warmup_frames=16`、`history_s=2.0`
+- [x] 保留本项目加的两道保护：前 `warmup_frames` 帧只学习不相减；每个频点输出幅度不超过原麦克风
+- [x] 每 4 帧解一次 513 个 8×8 复数线性方程（带 trace 正则）：手写批量 Cholesky（矩阵 Hermitian 正定），按频点向量化；自相关只存上三角
+- [x] 输入输出缓冲、最近 2 秒的输出 / 回声历史改成预分配缓冲（`VecDeque`），不再每次分配
+- [x] PyO3 暴露 `open_xiaoai_server.EchoCanceller`：`process(mic, ref)`、`delay`、`ref_active`、`frames`、`recent_end`、`reduction_db()`、`near_end_ratio_db(window_s, slice_s)`；计算时 `allow_threads`，内部 Mutex（收包线程 process、主循环 near_end_ratio_db 可以同时调）；输入接受任意数值类型和跨步视图
+- [x] 离线对比（`scripts/dsp_compare.py`）：合成数据和真实录音、三种包长，输出相对 RMS 误差 5e-15～1.5e-14，`near_end_ratio_db` 最多差 2e-9 dB，状态一致
+- [x] 加开关 `barge_in.echo_canceller.impl = "python" | "rust"`（多麦也用它，`multimic.echo_canceller.impl` 可单独覆盖），仓库默认仍是 Python；平板上已改成 rust 待验收
 - [ ] 音箱验收：播报中喊"你好缪斯"能打断；播报不会自己打断自己（近端门限 `near_end_min_db` 照常生效）
+- [ ] 验收后把仓库默认切到 rust
+
+耗时（平板）：单路每 32 ms 从 0.81 ms 降到 0.15 ms（单核 2.5% → 0.5%）；整条链路里多麦 3 路每块
+6.0 → 0.86 ms、主麦每帧 1.68 → 0.31 ms；一直说话时实时率 0.580 → 0.531（前端全部不占 GIL 的上限是 0.539）。
 
 ### 第 2 步：高通滤波 `core/services/audio/highpass.py`
 
-- [ ] 2 阶 Butterworth 二阶节，系数在 Rust 里按 `cutoff_hz` 计算（和 `scipy.signal.butter(..., output="sos")` 一致），跨包保留状态，支持单声道和多声道
-- [ ] 接口同 `HighPass.process(x)` / `reset()`；`make_highpass(cutoff, channels)` 返回值不变
-- [ ] 对比 scipy 输出一致后，从 `pyproject.toml` 去掉 scipy
+- [x] 2 阶 Butterworth 二阶节，系数在 Rust 里按 `cutoff_hz` 计算（和 `scipy.signal.butter(..., output="sos")` 差 4e-16），跨包保留状态，支持单声道和多声道（`native/src/dsp/highpass.rs`）
+- [x] 接口同 `HighPass.process(x)` / `reset()`（`open_xiaoai_server.HighPassFilter`）；`make_highpass(cutoff, channels)` 返回值不变，按 `audio_input.highpass_impl`（默认 rust）选实现，Python 备用版改成逐采样循环（不再用 scipy）
+- [x] 对比 scipy 输出一致（相对误差 1e-14）后，从 `pyproject.toml` / `uv.lock` 去掉 scipy
 
 ### 第 3 步：多麦分离 `core/services/audio/multimic.py`（115 行）
 
@@ -68,7 +91,14 @@
 | 会话控制（`external_conversation.py`、`wakeup_session.py`、`core/backends.py` 及各后端） | 主要在等网络和设备，最常改，留在 Python |
 | TTS、切段、灯效、设备命令、`music_duck.py`、`diagnostics.py` | 同上；诊断依赖 Python 自身的线程栈 |
 
-## 4. 约束
+## 4. 唤醒检测的开销（第 0 步发现，不属于前端重写）
+
+- 唤醒检测占 bridge CPU 的 70% 左右（线上 4 路合计约 86% 个核），是真正的大头；有人说话时还会积压
+  （2026-10-28 22:07:28 的 `kws_backlog_over_500ms`，积压 613 ms）
+- 可以试：`kws.stream_offsets_ms` 从 4 路错位减到 2 路、降低 `max_active_paths`、多麦只在 ch0 的 VAD 判定有人说话时才跑
+  IVA 3 路；都要用 `scripts/kws_acceptance.py` 确认唤醒率不降
+
+## 5. 约束
 
 - 每一步都能单独上线，Python 版保留作备用，配置开关可以切回去；全部验收稳定后再删 Python 实现
 - 输出和 Python 版逐样本对比通过后，才上音箱；音箱验收看：播报中打断、远场唤醒率、电视噪声下的误唤醒、`perf_bench.py` 实时率

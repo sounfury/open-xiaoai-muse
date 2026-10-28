@@ -42,8 +42,8 @@ open-xiaoai-muse/
 │   │   ├── tts/segment_player.py   # 分段播放（小爱原生预生成流水线 / 按段回调）
 │   │   ├── audio/
 │   │   │   ├── stream.py          # GlobalStream 全局音频流（多路输入广播，保留最近 3 秒）
-│   │   │   ├── aec.py             # 子带回声消除（移植自 OwnDing/open-xiaoai）
-│   │   │   ├── highpass.py        # 流式高通滤波（audio_input.highpass_hz，单声道和多麦都用）
+│   │   │   ├── aec.py             # 子带回声消除（移植自 OwnDing/open-xiaoai）；create_echo_canceller 按 echo_canceller.impl 选 Python / Rust 版
+│   │   │   ├── highpass.py        # 流式高通滤波（audio_input.highpass_hz，单声道和多麦都用；默认 Rust 版，不再依赖 scipy）
 │   │   │   ├── multimic.py        # 多麦前端：流式 STFT、在线 AuxIVA 盲源分离、3 麦求和
 │   │   │   ├── multimic_input.py  # 多麦唤醒输入：音箱 arecord 4 声道 | nc → AEC → IVA → 额外几路 KWS 输入
 │   │   │   ├── codec.py           # 音频编解码
@@ -68,6 +68,7 @@ open-xiaoai-muse/
 │       ├── server.rs              # WebSocket 音频服务器（TCP :4399）
 │       ├── python.rs              # Python 回调注册中心（HashMap）
 │       ├── macros.rs              # 辅助宏
+│       ├── dsp/                   # 音频前端 DSP：aec.rs 回声消除、highpass.rs 高通（算法不依赖 PyO3，mod.rs 是 Python 绑定）
 │       └── tts/                   # TTS 音频处理（流式、PCM 直通、MP3 解码）
 ├── app/openclaw/                  # OpenClaw 设备身份存储（Ed25519 密钥）
 ├── skills/xiaoai-tts/             # Agent 工具：通过 HTTP API 控制小爱播放
@@ -331,6 +332,7 @@ HTTP REST API 服务器（aiohttp），端口可配（默认 9092），默认监
 | `server.rs` | TCP :4399 WebSocket 服务器，处理音频流和事件路由 |
 | `python.rs` | Python 回调注册中心（`register_fn` / `call_fn`），跨语言调用 |
 | `tts/` | TTS 音频处理：HTTP 流式请求、MP3 解码、PCM 直通 |
+| `dsp/` | `EchoCanceller`（同 `aec.py` 接口）、`HighPassFilter`（同 `highpass.py`）：计算时释放 GIL，内部 Mutex；与 Python 版逐样本对比用 `scripts/dsp_compare.py`（要求相对误差 ≤ 1e-6，实测 1e-14） |
 
 ## 运行模式
 
@@ -409,7 +411,8 @@ API_SERVER_ENABLE=1 uv run main.py
 - chroot 里 uv 默认 `UV_FROZEN=1`：uv.toml 配了 USTC 镜像，不冻结会把整个 uv.lock 改写成镜像地址；venv 里 `sherpa_onnx/lib/libonnxruntime.so` 软链到 onnxruntime 的 .so
 - chroot 里操作 Android：`android '命令'`（`/usr/local/bin/android`，`nsenter -t 1 -m -r` 回到 Android 侧，环境变量取自 zygote）。`android 'input tap x y'`、`android 'screencap -p' > s.png`、`android 'uiautomator dump /data/local/tmp/ui.xml'` 再 `android 'cat ...'` 读出来；屏幕 1680x2520
 - Git Bash 调 adb 要 `MSYS_NO_PATHCONV=1`，否则 `/data/...` 被改成 Windows 路径
-- 更新代码：`git archive HEAD` 推到 `/data/local/tmp/xfer/`，在 chroot 里解压覆盖后 `bridge-ctl.sh restart`；依赖变了才在 chroot 里 `uv sync`
+- 更新代码：`git -c core.autocrlf=false archive HEAD` 推到 `/data/local/tmp/xfer/`（不加 `-c` 会导出 CRLF），在 chroot 里解压覆盖（HEAD 删掉的文件要手动删）后 `bridge-ctl.sh restart`；依赖或 `native/` 变了要在 chroot 里 `uv sync --frozen`（会用 maturin 重新编译，复用 `/opt/open-xiaoai-bridge/target` 缓存）
+- PC 上 Rust 工具链和编译缓存在 E 盘：`CARGO_HOME=E:\dev\rust\cargo`、`RUSTUP_HOME=E:\dev\rust\rustup`、`CARGO_TARGET_DIR=E:\dev\rust\target`（用户环境变量）
 - 性能基准 `scripts/perf_bench.py`（持续说话最坏情况）：平板实时率约 0.52（熄屏 0.56），PC 0.85；SenseVoice 识别 5 秒音频约 105 ms
 
 ### 兼容约束
