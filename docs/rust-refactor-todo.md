@@ -97,8 +97,22 @@ GIL：`scripts/kws_gil_bench.py` 显示 sherpa 解码时释放 GIL（4 线程加
 
 - 唤醒检测占 bridge CPU 的 70% 左右（线上 4 路合计约 86% 个核），是真正的大头；有人说话时还会积压
   （2026-10-28 22:07:28 的 `kws_backlog_over_500ms`，积压 613 ms）
-- 可以试：`kws.stream_offsets_ms` 从 4 路错位减到 2 路、降低 `max_active_paths`、多麦只在 ch0 的 VAD 判定有人说话时才跑
-  IVA 3 路；都要用 `scripts/kws_acceptance.py` 确认唤醒率不降
+- 模型：`core/models/encoder.onnx` 是整个中英双语流式识别 zipformer（int8 105 MB，`encoder_dims` 384、15 层、
+  每块 32 帧），batch 固定为 1。`scripts/kws_cost_bench.py`：每条错位流每 32 ms 算 1.8 ms（单核 5.6%），
+  和流数成正比；`max_active_paths` 4 / 8 / 16 几乎没有区别（开销在编码器）。线上 4 路检测 × 4 条流 = 16 条，
+  门控全开时约 90% 个核
+- 专用小模型 `sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`（int8 编码器 4.4 MB，phone+ppinyin，支持英文）：
+  每条流 0.72 ms，只省 60%（每条流各自算 fbank、Python 每帧转换和解码调用的固定开销不变）；准确率未测，
+  要先让 `SherpaKeywordSpotter` / keywords 生成支持换模型和词表格式
+- 负载分布（`scripts/kws_load_from_log.py`，10-27～10-28 共 48 小时）：没人说话时 4 路合计约 12% 个核（每帧
+  4 次 Silero VAD + 分发到线程池的固定开销），晚上有人说话 / 开电视涨到 35～66%；门控打开的时间约 10～15%
+- 命中来源（10-27 以来 21 次唤醒）：iva2 11 次、ch0 9 次、ch0 和 iva1 同帧 1 次；iva0 一次没有。唤醒后检测器
+  马上被重置，看不出各路是不是互补
+- 可以试（都要用 `scripts/kws_acceptance.py` 确认唤醒率不降）：
+  - `kws.stream_offsets_ms` 4 条 → 2 条：有人说话时 −50%，只改配置，验收脚本支持 `--offsets 0,160`
+  - 多麦用 ch0 的 VAD 统一门控、门控关着时不往线程池分发：空闲时 12% → 约 3%
+  - 多麦只跑 1 路（按语音能量挑当前最响的 IVA 输出，类似原生小爱的"选通道"）：有人说话时 −50%
+  - 换专用小模型：−60%，风险在准确率
 
 ## 5. 约束
 
