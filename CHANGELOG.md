@@ -2,10 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased (fork: sounfury/open-xiaoai-bridge)
+## Unreleased (sounfury/open-xiaoai-muse)
 
 ### 重点更新
 
+- 项目独立并改名为 open-xiaoai-muse（由 coderzc/open-xiaoai-bridge `a1f77a8` 分叉，并移植 OwnDing/open-xiaoai 的能力）；LICENSE 保留原有版权声明并加入 sounfury，README 致谢列出三个来源项目。删除 Docker 部署（Dockerfile、docker-compose.yml、镜像构建和发布 workflow）。以下 v1.0.7 及更早的版本是上游的发布记录。
 - 新增小爱管家"你好缪斯"唤醒词（`MUSE_ENABLE=1` 启用）：KWS 命中唤醒词或小爱 ASR 文本以唤醒词开头时，`before_wakeup` 返回 `"openai"`，进入 OpenAI 兼容服务（Hermes）连续对话。"小爱同学"原生链路不变。
   - 早期版本把请求单次 POST 到小爱管家 webhook，并在只说唤醒词时追问一句；已移除（`MuseWebhookClient` / `MuseRequestHandler` / `core/muse_followup.py`、`MUSE_WEBHOOK_URL` / `MUSE_WEBHOOK_TOKEN`、`muse.url` 等配置）。
 - 小爱管家唤醒词改为集合（容忍口误和 ASR 误识别）：默认包含 `你好缪斯` / `嗨缪斯` / `哈喽缪斯` / `hi缪斯` / `hi muse` / `hey muse` / 单独的 `缪斯` / `muse`，以及同音字（缪思、缪丝、谬斯、谬思）和近音字（妙思、妙斯、木斯、慕斯，仅限带问候语），共 52 个写法。可用 `MUSE_WAKE_WORDS`（`,` `，` `、` 分隔）或 `muse.wake_words` 覆盖。

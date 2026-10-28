@@ -39,15 +39,11 @@ class WakeupKeywordStartupTest(unittest.TestCase):
 
     def test_startup_entrypoints_prepare_keywords_for_openai(self):
         start_sh = (ROOT / "scripts/start.sh").read_text(encoding="utf8")
-        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf8")
 
         self.assertIn("OPENAI_ENABLE_VALUE", start_sh)
         self.assertIn("QWENPAW_ENABLE_VALUE", start_sh)
         self.assertIn('[[ "$OPENAI_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]', start_sh)
         self.assertIn('[[ "$QWENPAW_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]', start_sh)
-        self.assertIn('${OPENAI_ENABLE:-}', dockerfile)
-        self.assertIn('${QWENPAW_ENABLE:-}', dockerfile)
-        self.assertIn('python core/services/audio/kws/keywords.py', dockerfile)
 
 
 class XiaoAIWakeupKeywordTest(unittest.TestCase):

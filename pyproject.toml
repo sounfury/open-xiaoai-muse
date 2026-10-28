@@ -1,7 +1,7 @@
 [project]
-name = "open-xiaoai-bridge"
+name = "open-xiaoai-muse"
 version = "1.0.0"
-description = "小爱音箱与外部 AI 服务的桥接器"
+description = "基于 open-xiaoai 的小爱音箱 AI 中枢：你好缪斯唤醒，接入 Hermes 等外部 AI 服务"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9.0",

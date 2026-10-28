@@ -196,9 +196,7 @@ class MuseSettingsTest(unittest.TestCase):
 
     def test_startup_entrypoints_prepare_keywords_for_muse(self):
         start_sh = (ROOT / "scripts/start.sh").read_text(encoding="utf8")
-        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf8")
         self.assertIn('[[ "$MUSE_ENABLE_VALUE" =~ ^(1|true|yes)$ ]]', start_sh)
-        self.assertIn("${MUSE_ENABLE:-}", dockerfile)
 
 
 # ---------------------------------------------------------------------------

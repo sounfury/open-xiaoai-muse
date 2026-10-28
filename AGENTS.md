@@ -1,7 +1,8 @@
 # AGENTS.md
 
-> 小爱音箱与外部 AI 服务（小智 AI、OpenClaw）的桥接器。
-> 接管音箱音频输入输出，实现与第三方 AI 的对话。
+> open-xiaoai-muse：基于 open-xiaoai 的小爱音箱 AI 中枢（你好缪斯 → Hermes，也支持小智 AI、OpenClaw 等）。
+> 接管音箱音频输入输出，实现与第三方 AI 的对话。由 coderzc/open-xiaoai-bridge 分叉，并移植了 OwnDing/open-xiaoai 的回声消除等能力。
+> 仓库改名前叫 open-xiaoai-bridge：音箱 `/tmp/open-xiaoai-bridge-*` 文件、各后端 `session_key`、平板 `/opt/open-xiaoai-bridge` 等运行时标识沿用旧名，不要顺手改（改 pid 文件名会让音箱上的旧进程没人收拾）。
 
 ## 系统架构
 
@@ -10,7 +11,7 @@
 ## 项目结构
 
 ```
-open-xiaoai-bridge/
+open-xiaoai-muse/
 ├── main.py                        # 入口：解析环境变量，启动 MainApp
 ├── config.py                      # 用户配置（唤醒词、路由钩子、TTS、OpenClaw 等）
 ├── core/
@@ -461,6 +462,8 @@ API_SERVER_ENABLE=1 uv run main.py
 
 ## 参考资源
 
-- 项目主页: https://github.com/coderzc/open-xiaoai-bridge
+- 项目主页: https://github.com/sounfury/open-xiaoai-muse
+- 上游（分叉基础）: https://github.com/coderzc/open-xiaoai-bridge
+- 回声消除 / 唤醒调优 / 音箱客户端来源: https://github.com/OwnDing/open-xiaoai（`7ecea6f`，见 `docs/ownding-migration-plan.md`）
 - 刷机教程: https://github.com/idootop/open-xiaoai/blob/main/docs/flash.md
-- Client 端补丁: https://github.com/idootop/open-xiaoai/blob/main/packages/client-rust/README.md
+- Client 端（OwnDing 版）: https://github.com/OwnDing/open-xiaoai/blob/main/packages/client-rust/README.md

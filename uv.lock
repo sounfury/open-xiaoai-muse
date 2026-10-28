@@ -651,7 +651,7 @@ wheels = [
 ]
 
 [[package]]
-name = "open-xiaoai-bridge"
+name = "open-xiaoai-muse"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [

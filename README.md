@@ -1,20 +1,16 @@
 <div align="center">
 
-# Open-XiaoAI Bridge
+# Open-XiaoAI Muse
 
-[![Python](https://img.shields.io/badge/Python-3.12+-3776ab?logo=python&logoColor=white)](https://www.python.org/) [![Rust](https://img.shields.io/badge/Rust-native_module-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE) [![GitHub Stars](https://img.shields.io/github/stars/coderzc/open-xiaoai-bridge?style=flat&logo=github)](https://github.com/coderzc/open-xiaoai-bridge/stargazers) [![Docker Image](https://img.shields.io/badge/ghcr.io-open--xiaoai--bridge-2496ed?logo=docker&logoColor=white)](https://ghcr.io/coderzc/open-xiaoai-bridge)
+[![Python](https://img.shields.io/badge/Python-3.12+-3776ab?logo=python&logoColor=white)](https://www.python.org/) [![Rust](https://img.shields.io/badge/Rust-native_module-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-[![New](https://img.shields.io/badge/🎉_新功能-OpenClaw_支持_自定义唤醒词_|_连续对话_|_多_Agent_路由_|_克隆音色_|_流式播放-f97316)](https://github.com/coderzc/open-xiaoai-bridge/releases)
+**基于 open-xiaoai 的小爱音箱 AI 中枢：“你好缪斯”唤醒，接入 Hermes 等外部 AI 服务**
 
-**小爱音箱与外部 AI 服务（小智 AI、OpenClaw、OpenAI 兼容服务、QwenPaw）的桥接器**
-
-打破小爱音箱的封闭生态，灵活接入多种 AI 服务，提供 HTTP API 实现远程控制。
-
-[📺 演示 ①](https://www.bilibili.com/video/BV1DHcBz1Ex7) · [📺 演示 ②](https://www.bilibili.com/video/BV1UQQSBHEvg)
+接管小爱音箱的音频输入输出：本地唤醒、识别，播报中可打断；也保留小智 AI、OpenClaw、QwenPaw 等接入和 HTTP API。
 
 [📖 快速开始](#-快速开始) · [🔊 TTS 配置](#-tts-配置) · [🔌 OpenAI 兼容服务](#-openai-兼容服务) · [🐾 QwenPaw 集成](#-qwenpaw-集成) · [🦞 OpenClaw 集成](#-openclaw-集成) · [🔧 API 文档](#-api-server) · [🐛 常见问题](#-常见问题)
 
-> 本项目受 [Open-XiaoAI](https://github.com/idootop/open-xiaoai) 启发，并参考其 `examples/xiaozhi/` 示例演进而来，现已作为独立项目持续维护。
+> 本项目由 [coderzc/open-xiaoai-bridge](https://github.com/coderzc/open-xiaoai-bridge) 分叉而来，并移植了 [OwnDing/open-xiaoai](https://github.com/OwnDing/open-xiaoai) 的回声消除、唤醒调优等能力；两者都源自 [idootop/open-xiaoai](https://github.com/idootop/open-xiaoai)。详见[致谢](#致谢)。
 
 </div>
 
@@ -24,6 +20,8 @@
 
 | 功能                 | 说明                                                                             |
 | ------------------ | ------------------------------------------------------------------------------ |
+| 🎼 **你好缪斯**        | 自定义唤醒词进入 Hermes 连续对话，流式回复分段播报                                             |
+| 🗣️ **播报中打断**       | 音箱发回播放回采，回声消除后播报时也能听见唤醒词；可选多麦唤醒                                   |
 | 🔌 **OpenAI 兼容服务** | 接入 Hermes Agent API Server、OpenAI、Ollama、LM Studio 等 `/v1/chat/completions` 服务 |
 | 🐾 **QwenPaw 集成**   | 接入 [QwenPaw](https://github.com/agentscope-ai/QwenPaw) HTTP Console 任务接口，支持指定 Agent 和会话 |
 | 🦞 **OpenClaw 集成** | 接入 [OpenClaw](https://github.com/openclaw/openclaw)，支持连续对话，可选豆包 TTS 或小爱原生 TTS  |
@@ -45,8 +43,8 @@
 
 1. **🔧 刷机** — 更新小爱音箱固件，开启 SSH
    - [刷机教程](https://github.com/idootop/open-xiaoai/blob/main/docs/flash.md)
-2. **🛠️ 音箱补丁程序安装 Client** — 在音箱上运行 Rust Client 端
-   - [补丁程序安装教程](https://github.com/coderzc/open-xiaoai/blob/main/packages/client-rust/README.md)
+2. **🛠️ 音箱补丁程序安装 Client** — 在音箱上运行 OwnDing 版 Rust Client（`client-2026.10.09` 或更新）。`native/` 依赖他的二进制音频帧协议，旧版客户端不兼容
+   - [Client 安装说明](https://github.com/OwnDing/open-xiaoai/blob/main/packages/client-rust/README.md) · [下载](https://github.com/OwnDing/open-xiaoai/releases)
 
 ### 📥 模型文件
 
@@ -54,43 +52,16 @@
 
 如果 OpenClaw / OpenAI 兼容服务 / QwenPaw 连续对话使用 `xiaoai_asr`，只需要 `VAD + KWS`，不需要本地 ASR 模型。
 
-1. 从 [releases](https://github.com/coderzc/open-xiaoai-bridge/releases/tag/vad-kws-asr-models) 下载模型压缩包
-2. 解压模型文件（路径见下方具体部署方式）
-
-### 🐳 Docker Compose（推荐）
-
-模型文件解压到 `./models` 目录，然后下载配置并启动：
-
-```bash
-# 下载配置文件
-curl -O https://raw.githubusercontent.com/coderzc/open-xiaoai-bridge/main/config.py
-curl -O https://raw.githubusercontent.com/coderzc/open-xiaoai-bridge/main/docker-compose.yml
-
-# 按需修改 config.py 和 docker-compose.yml，然后启动
-docker compose up -d
-```
-
-> **💡 国内镜像加速**：如果拉取镜像太慢，可将 `docker-compose.yml` 中的镜像改为：
-> ```yaml
-> image: ghcr.nju.edu.cn/coderzc/open-xiaoai-bridge:latest
-> ```
-
-> **💡 容器访问宿主机服务**：如果需要让容器访问宿主机上的 OpenClaw / QwenPaw，请查看 [Docker 常见问题](#-docker)。
-
-`docker-compose.yml` 已包含模型目录挂载：
-
-```yaml
-volumes:
-  - ./models:/app/core/models
-```
+1. 从上游 coderzc/open-xiaoai-bridge 的 [releases](https://github.com/coderzc/open-xiaoai-bridge/releases/tag/vad-kws-asr-models) 下载模型压缩包
+2. 解压到 `core/models/` 目录
 
 ### 💻 本地编译
 
-模型文件解压到 `core/models/` 目录，然后克隆仓库并启动：
+克隆仓库并启动：
 
 ```bash
-git clone https://github.com/coderzc/open-xiaoai-bridge.git
-cd open-xiaoai-bridge
+git clone https://github.com/sounfury/open-xiaoai-muse.git
+cd open-xiaoai-muse
 
 # 依赖: uv, Rust
 # Linux 还需要: pkg-config, patchelf
@@ -457,12 +428,12 @@ Bridge 的 TTS provider 配置跟随各个后端，配置层级保持不变：
 
 ### MLX-Audio TTS
 
-适用于 Apple Silicon 本地部署的 [MLX-Audio](https://github.com/Blaizzy/mlx-audio) 服务。在需要使用它的后端中配置 `tts_provider = "mlx_audio"`；Bridge 在 Docker 中运行时，通过 `host.docker.internal` 访问 Mac 宿主机：
+适用于 Apple Silicon 本地部署的 [MLX-Audio](https://github.com/Blaizzy/mlx-audio) 服务。在需要使用它的后端中配置 `tts_provider = "mlx_audio"`；Bridge 和 MLX-Audio 不在同一台机器时，把 `base_url` 改成 Mac 的局域网地址：
 
 ```python
 "tts": {
     "mlx_audio": {
-        "base_url": "http://host.docker.internal:8000/v1",
+        "base_url": "http://127.0.0.1:8000/v1",
         "api_key": "",
         "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-6bit",
         "mode": "voice_design",  # 或 "custom_voice"
@@ -556,32 +527,7 @@ if "让小黑" in text:
 
 用于接入阿里的 [QwenPaw](https://github.com/agentscope-ai/QwenPaw)。桥接器会调用 QwenPaw 的 HTTP Console 后台任务接口，将小爱音箱识别到的文本发送给指定 Agent，并把回复通过小爱或豆包 TTS 播放出来。
 
-推荐使用 Docker Compose 运行桥接器。先启动 QwenPaw（可在宿主机或同一 Docker 网络中运行），然后在 `docker-compose.yml` 中启用：
-
-```yaml
-services:
-  open-xiaoai-bridge:
-    environment:
-      - QWENPAW_ENABLE=1
-```
-
-修改完成后启动桥接器：
-
-```bash
-docker compose up -d
-```
-
-如果 QwenPaw 运行在宿主机，容器里的 `127.0.0.1` 指向容器自身，需将 `base_url` 改为宿主机可访问地址，例如宿主机局域网 IP：
-
-```python
-"qwenpaw": {
-    "base_url": "http://192.168.1.10:8088",
-    "agent_id": "default",
-    "session_key": "open-xiaoai-bridge",
-}
-```
-
-也可以按 [Docker 常见问题](#-docker) 使用 `network_mode: host`，此时可继续使用 `http://127.0.0.1:8088`。
+先启动 QwenPaw，再用 `QWENPAW_ENABLE=1 ./scripts/start.sh` 启动桥接器。QwenPaw 不在同一台机器时，把 `base_url` 改成它的局域网地址，例如 `http://192.168.1.10:8088`。
 
 `config.py` 示例：
 
@@ -968,7 +914,7 @@ if match_muse_text(text):          # MUSE_ENABLE 未开启时恒为 None
     return "openai"
 ```
 
-> 使用自定义 `config.py`（Docker 挂载 / `CONFIG_PATH`）时，需要把上面这段 `before_wakeup` 代码和 `APP_CONFIG["muse"]` 一起合并进去，否则不会触发。
+> 使用自定义 `config.py`（`CONFIG_PATH`）时，需要把上面这段 `before_wakeup` 代码和 `APP_CONFIG["muse"]` 一起合并进去，否则不会触发。
 > 旧配置里没有 `wake_words` / `kws_wake_words` / `leading_fillers` 时使用代码里的默认值；KWS 子集在生成 `keywords.txt` 时自动并入，`wakeup.keywords` 里不需要再写缪斯唤醒词（写了也会去重）。
 
 ### 配置
@@ -997,58 +943,6 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
 
 ## ❓ 常见问题
 
-### 🐳 Docker
-
-1. **在容器里如何通过 `127.0.0.1` 直连宿主机上的 OpenClaw / QwenPaw？**
-
-    默认 `docker-compose.yml` 已经去掉了 `network_mode: host`，不需要再额外修改这一行。
-
-    需要注意：桥接模式下，容器里的 `127.0.0.1` / `localhost` 指向的是**容器自己**，不是宿主机。
-
-    如果你希望通过 `127.0.0.1` 直连宿主机上的 OpenClaw / QwenPaw，使用 **方式 1**:
-
-    **方式 1：增加 `network_mode: host`**
-
-    在 `docker-compose.yml` 里添加：
-
-    ```yaml
-    services:
-        open-xiaoai-bridge:
-            network_mode: host
-    ```
-
-    **方式 2：通过网络 IP 连接（无需 host 模式）**
-
-    如果不使用 `network_mode: host`，可以让 OpenClaw / QwenPaw 监听 LAN，然后在容器里通过宿主机的局域网 IP 连接：
-
-    可以直接一起改成下面这样：
-
-    ```text
-    # OpenClaw
-    {
-      "gateway": {
-        "port": 18789,
-        "mode": "lan",
-        "controlUi": {
-          "allowedOrigins": [
-            "http://localhost:18789",
-            "http://127.0.0.1:18789",
-            "http://192.168.5.123:18789"
-          ]
-        }
-      }
-    }
-
-    # config.py
-        "openclaw": {
-            "url": "ws://192.168.5.123:18789",
-            "token": "xxxxx"
-            ...
-        }
-    ```
-
-    PS: 最好固定 IP 地址。
-
 ### 🎙️ 唤醒词与连续对话
 
 1. **模型文件在哪下载？**
@@ -1056,7 +950,7 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
     小智 AI 和 `local_asr` 模式需要 `VAD + KWS + ASR` 模型文件。  
     `xiaoai_asr` 模式只需要 `VAD + KWS`。
 
-    详见[快速开始 - Docker Compose](#-docker-compose推荐) 或 [本地编译](#-本地编译) 章节。
+    详见[快速开始 - 模型文件](#-模型文件)。
 
 2. **如何切换 ASR 语音识别模型？**
 
@@ -1079,7 +973,7 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
     | `fire_red_asr` | [FireRedASR](https://github.com/FireRedTeam/FireRedASR) | FireRedASR 是一系列开源的工业级自动语音识别 (ASR) 模型，支持普通话、汉语方言和英语，在公开的普通话 ASR 基准测试中达到了新的最先进水平 (SOTA)，同时还提供了出色的歌词识别能力。 |
     | `doubao` | [火山引擎豆包语音识别](https://www.volcengine.com/docs/6561/1354868?lang=zh) | 云端录音文件识别，支持标准版和极速版，需要配置火山引擎 App Key / Access Key |
 
-    使用本地模型时，将对应模型目录放到 `core/models/`（Docker 部署放 `./models/`）下即可，不配置默认使用 `sense_voice`。
+    使用本地模型时，将对应模型目录放到 `core/models/` 下即可，不配置默认使用 `sense_voice`。
 
     使用豆包 ASR 时，将 `model` 改为 `"doubao"`，并填写 `asr.doubao`：
 
@@ -1157,8 +1051,7 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
     await speaker.play(server_file="/path/to/hello.wav")
     ```
 
-    这里的路径是**运行 open-xiaoai-bridge 的这台机器**上的本地文件路径，不是音箱里的路径。
-    如果是 Docker 部署，请记得把对应目录挂载进容器。
+    这里的路径是**运行桥接器的这台机器**上的本地文件路径，不是音箱里的路径。
 
 ### 🦞 OpenClaw
 
@@ -1166,15 +1059,9 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
 
     正常流程。保持服务在线，到 OpenClaw UI 批准设备：**Nodes → Devices → Approve**。
 
-2. **容器重建后需要重新配对？**
+2. **重新部署后需要重新配对？**
 
-    Docker 部署时挂载 `identity_path` 目录为持久化卷，否则设备身份丢失需重新配对：
-
-    ```yaml
-    # docker-compose.yml
-    volumes:
-      - ./openclaw:/app/openclaw
-    ```
+    设备身份存在 `identity_path` 目录（默认 `app/openclaw/identity/`），重新部署时把它一起带上，否则需要重新配对。
 
 3. **session\_key 是什么？**
 
@@ -1303,7 +1190,7 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
    4. **重要**：确保复刻音色与 `tts.doubao.app_id` 属于**同一个火山引擎项目**，否则无法使用。
 3. **如何将指定文本转成特定音色的音频文件？**
 
-   可以使用脚本 [scripts/generate\_tts.py](/Users/zc/projects/open-xiaoai-bridge/scripts/generate_tts.py)：
+   可以使用脚本 [scripts/generate\_tts.py](scripts/generate_tts.py)：
    ```bash
    python3 scripts/generate_tts.py \
      --speaker-id zh_male_lengkugege_emo_v2_mars_bigtts \
@@ -1337,7 +1224,11 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
 
 ## 致谢
 
-感谢 [Open-XiaoAI](https://github.com/idootop/open-xiaoai) 及其 `examples/xiaozhi/` 示例提供的启发与参考。
+本项目建立在三个 MIT 项目之上，版权声明见 [LICENSE](./LICENSE)：
+
+- [idootop/open-xiaoai](https://github.com/idootop/open-xiaoai)（Del Wang）：小爱音箱刷机、音箱端 Client 和 `examples/xiaozhi/` 示例，是下面两个项目的共同来源。
+- [coderzc/open-xiaoai-bridge](https://github.com/coderzc/open-xiaoai-bridge)（coderzc）：本项目的分叉基础（上游 `a1f77a8`，2026-10-10）。整体框架、小智 AI / OpenClaw / QwenPaw / OpenAI 兼容服务接入、TTS、HTTP API 和模型文件都来自这里。
+- [OwnDing/open-xiaoai](https://github.com/OwnDing/open-xiaoai)（基于 commit `7ecea6f`）：子带回声消除（`core/services/audio/aec.py`）和音箱播放回采、唤醒调优（每词阈值、错开起点的多路检测）、退出词规则、小爱原生 TTS 分段播放，以及 `native/` 依赖的 Rust crate（二进制音频帧、心跳和超时）。移植记录见 [docs/ownding-migration-plan.md](docs/ownding-migration-plan.md)。
 
 ***
 
@@ -1356,15 +1247,13 @@ MUSE_ENABLE=1 OPENAI_ENABLE=1 API_SERVER_ENABLE=1 OPENAI_BASE_URL=<Hermes 地址
 | 资源              | 链接                                                                                                                                                                                                                                                       |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 🔧 刷机教程         | [刷机教程](https://github.com/idootop/open-xiaoai/blob/main/docs/flash.md)                                                                                                                                                                                   |
-| 🛠️ Client 端安装  | [Client 端安装](https://github.com/idootop/open-xiaoai/blob/main/packages/client-rust/README.md)                                                                                                                                                            |
+| 🛠️ Client 端安装  | [Client 端安装（OwnDing 版）](https://github.com/OwnDing/open-xiaoai/blob/main/packages/client-rust/README.md)                                                                                                                                                            |
 | 🎙️ 豆包 TTS 音色列表 | [火山引擎文档](https://www.volcengine.com/docs/6561/1257544)                                                                                                                                                                                                   |
 
 ***
 
 <div align="center">
 
-**Made with ❤️ by** **[coderzc](https://github.com/coderzc)**
-
-如果这个项目对你有帮助，请给它一颗 ⭐️
+**Maintained by** **[sounfury](https://github.com/sounfury)** · 基于 [coderzc](https://github.com/coderzc)、[OwnDing](https://github.com/OwnDing)、[idootop](https://github.com/idootop) 的工作
 
 </div>
