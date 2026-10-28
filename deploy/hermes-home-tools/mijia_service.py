@@ -137,6 +137,14 @@ def blocked_names() -> set:
     return {n for x in policy().get("blocked_devices", []) for n in x.get("names", [])}
 
 
+def block_reason(did=None, text=None) -> str:
+    """家规里禁止控制的设备：按 did 或用户说法里的名字命中时，返回家规写的原因。"""
+    for x in policy().get("blocked_devices", []):
+        if (did and str(x["did"]) == str(did)) or (text and any(n in text for n in x.get("names", []))):
+            return x.get("reason") or "该设备已被用户禁止控制"
+    return ""
+
+
 def scene_block_reason(scene) -> str:
     if scene["name"] in set(policy().get("blocked_scenes", [])):
         return "该场景已被用户禁止运行"
@@ -317,9 +325,9 @@ def resolve(query, allow_refresh=True):
     q = str(query or "").strip()
     if not q:
         raise NotFound("没有给出设备名")
-    for n in blocked_names():
-        if n in q:
-            raise Refused("该设备已被用户禁止控制")
+    reason = block_reason(text=q)
+    if reason:
+        raise Refused(reason)
     dev = _match(q)
     if dev is None and allow_refresh and time.time() - S.updated_at > REFRESH_ON_MISS_S:
         try:
@@ -334,7 +342,7 @@ def resolve(query, allow_refresh=True):
         raise NotFound(f"米家里没有叫“{q}”的设备（{fresh}）。候选只是名字相近或全部设备，"
                        "不能直接替用户换成候选去操作；先查记忆里的叫法，仍不确定就问用户", close or names)
     if dev["did"] in blocked_dids():
-        raise Refused("该设备已被用户禁止控制")
+        raise Refused(block_reason(did=dev["did"]))
     return dev
 
 
@@ -352,6 +360,12 @@ def _match(q):
         if len(hits) > 1:
             raise NotFound(f"“{q}”对应多台设备，请说清是哪一台", [h["name"] + (f"（{h['room']}）" if h["room"] else "") for h in hits])
     return None
+
+
+def in_room(dev, room):
+    """按房间过滤：房间名或设备名包含用户说的房间（如“卧室”匹配房间为“出租屋”的“卧室灯”）。"""
+    r = norm(room)
+    return r in norm(dev["room"] or "") or r in norm(dev["name"])
 
 
 def related_scenes(did):
@@ -375,7 +389,7 @@ def op_devices(b):
     room = b.get("room")
     out = []
     for v in S.devices.values():
-        if room and norm(room) not in norm(v["room"] or ""):
+        if room and not in_room(v, room):
             continue
         item = {"name": v["name"], "room": v["room"], "online": v["online"], "kind": _kind(v["spec_type"])}
         if v["did"] in blocked_dids():
@@ -412,9 +426,19 @@ def op_get(b):
             except (NotFound, Refused) as e:
                 results.append(_err(n, e))
     else:
-        # 全屋 / 按房间查询时跳过红外等没有规格的设备
-        targets = [v for v in S.devices.values() if v["did"] not in blocked_dids() and v.get("spec_type")
-                   and (not room or norm(room) in norm(v["room"] or ""))]
+        # 全屋 / 按房间查询：红外等没有规格的设备没有状态可读，列出来并给出操作它的场景
+        devs = [v for v in S.devices.values() if v["did"] not in blocked_dids() and (not room or in_room(v, room))]
+        if not devs:
+            rooms = sorted({v["room"] for v in S.devices.values() if v["room"] and v["did"] not in blocked_dids()})
+            return {"ok": False, "results": [], "rooms": rooms,
+                    "error": f"没有房间名或设备名包含“{room}”的可查询设备" if room else "目录里没有可查询的设备"}
+        for v in devs:
+            if v.get("spec_type"):
+                targets.append(v)
+            else:
+                sc = related_scenes(v["did"])
+                results.append({"device": v["name"], "room": v["room"], "kind": "ir-remote",
+                                "note": "红外遥控设备，没有可读的状态" + (f"；控制用场景：{'、'.join(sc)}" if sc else "；没有操作它的场景")})
     plan, params = [], []
     for dev in targets:
         try:
@@ -461,7 +485,7 @@ def op_get(b):
         if not dev["online"]:
             item["note"] = "目录显示该设备离线，读数可能是旧值"
         results.append(item)
-    return {"ok": any(r.get("ok") for r in results), "results": results}
+    return {"ok": any(r.get("ok") or r.get("kind") == "ir-remote" for r in results), "results": results}
 
 
 def op_set(b):
