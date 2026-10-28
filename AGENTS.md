@@ -406,7 +406,7 @@ API_SERVER_ENABLE=1 uv run main.py
 - 平板上的 FlClash VPN 会让 chroot 外网走 tun0，Hermes 连接慢且偶发 DNS 失败；保持关闭或让 132.226.76.2 直连
 - chroot 里还装了 Node v24（`/opt/node`）、pi（`@earendil-works/pi-coding-agent`，`/root/.pi/agent/` 用 magpie.oci 的 12 个模型）和 paseo（`@getpaseo/cli`，`/root/.paseo`，监听 127.0.0.1:6767 + relay 配对，开机由 service.d 脚本 `paseo start`）；重装见 `setup-agents.sh`
 - SSH：chroot 内 sshd 监听 2222（仅密钥，`UsePAM no`；`setup-sshd.sh`，开机由 service.d 启动）。PC 上 `ssh tablet`（`~/.ssh/config`，默认用无密码短语的 `~/.ssh/tablet_ed25519`；`id_ed25519` 有密码短语，BatchMode 用不了）。SSH 进来是在 chroot 里，碰不到 Android 侧的 `bridge-ctl.sh`；要重启 bridge 可以 `pkill -INT -f "python main.py"`，守护循环约 3 秒后自动拉起
-- 开发副本：chroot 里 `/root/projects/open-xiaoai-bridge` 是 git clone（远端 sounfury / origin，给 paseo / pi 用），`core/models`、`tests/data`、`.hermes_api_key` 软链到 `/opt` 那份；`/opt/open-xiaoai-bridge` 只用来运行。开发副本里不要跑 `main.py`（和运行中的 bridge 抢端口）。chroot 里 uv 默认 `UV_FROZEN=1`：uv.toml 配了 USTC 镜像，不冻结会把整个 uv.lock 改写成镜像地址；venv 里 `sherpa_onnx/lib/libonnxruntime.so` 软链到 onnxruntime 的 .so
+- chroot 里 uv 默认 `UV_FROZEN=1`：uv.toml 配了 USTC 镜像，不冻结会把整个 uv.lock 改写成镜像地址；venv 里 `sherpa_onnx/lib/libonnxruntime.so` 软链到 onnxruntime 的 .so
 - chroot 里操作 Android：`android '命令'`（`/usr/local/bin/android`，`nsenter -t 1 -m -r` 回到 Android 侧，环境变量取自 zygote）。`android 'input tap x y'`、`android 'screencap -p' > s.png`、`android 'uiautomator dump /data/local/tmp/ui.xml'` 再 `android 'cat ...'` 读出来；屏幕 1680x2520
 - Git Bash 调 adb 要 `MSYS_NO_PATHCONV=1`，否则 `/data/...` 被改成 Windows 路径
 - 更新代码：`git archive HEAD` 推到 `/data/local/tmp/xfer/`，在 chroot 里解压覆盖后 `bridge-ctl.sh restart`；依赖变了才在 chroot 里 `uv sync`
