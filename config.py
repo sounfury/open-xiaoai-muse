@@ -193,6 +193,8 @@ APP_CONFIG = {
         # 高通滤波（Hz）：去掉这个频率以下的低频（空调 / 冰箱嗡声、桌面震动、音乐低音鼓），人声不受影响。
         # 单声道（VAD / KWS / ASR）和多麦链路都用。None / 0 = 关闭
         "highpass_hz": 120,
+        # 高通实现："rust"（native/src/dsp/highpass.rs，默认）| "python"（逐采样循环，备用）
+        "highpass_impl": "rust",
     },
     # 对话期间压低音乐（core/services/music_duck.py）：进入连续对话时压低，退出时恢复。
     # 音乐一直响会被 VAD / ASR 当成你在说话（歌词被识别成问题，对话停不下来）。
@@ -248,6 +250,9 @@ APP_CONFIG = {
         "near_end_min_db": None,
         # 回声消除器（core/services/audio/aec.py）
         "echo_canceller": {
+            # "python"（aec.py）| "rust"（native/src/dsp/aec.rs，计算时不占 GIL）；多麦链路也用这个
+            # （multimic.echo_canceller.impl 可单独覆盖）。改了要重启 bridge
+            "impl": "python",
             "taps": 8,  # 回声尾巴长度（帧，每帧 16 ms）
             "tau_s": 3.0,  # 回声路径估计的平均时长（秒）
         },

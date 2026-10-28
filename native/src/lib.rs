@@ -7,6 +7,7 @@ use serde_json::json;
 use server::AppServer;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub mod dsp;
 pub mod macros;
 pub mod opus;
 pub mod python;
@@ -150,6 +151,7 @@ fn open_xiaoai_server(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stop_recording, &m)?)?;
     m.add_function(wrap_pyfunction!(start_recording, &m)?)?;
     m.add_function(wrap_pyfunction!(set_echo_ref, &m)?)?;
+    crate::dsp::init_module(&m)?;
     crate::opus::init_module(&m)?;
     crate::python::init_module(&m)?;
     crate::tts::init_module(&m)?;

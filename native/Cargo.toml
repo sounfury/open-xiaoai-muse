@@ -29,6 +29,11 @@ tokio-stream = "0.1"
 symphonia = { version = "0.5", features = ["mp3", "ogg", "vorbis", "pcm", "wav"] }
 base64 = "0.22"
 
+# 音频前端 DSP（src/dsp/）：回声消除、高通
+numpy = "0.24"
+realfft = "3.4"
+num-complex = "0.4"
+
 # Opus codec (statically linked)
 audiopus_sys = { version = "0.2", features = ["static"] }
 audiopus = { version = "0.3.0-rc.0", features = ["coder"] }

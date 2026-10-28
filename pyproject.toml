@@ -14,7 +14,6 @@ dependencies = [
     "pypinyin>=0.54.0",
     "python-socks>=2.8.1",
     "requests>=2.32.3",
-    "scipy>=1.15.0",
     "sentencepiece>=0.2.0",
     "sherpa-onnx>=1.12.26",
     "soundfile>=0.13.0",

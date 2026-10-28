@@ -70,6 +70,11 @@ class MultiMicInput:
         echo_cfg = cfg.get("echo_canceller") or {}
         self._echo_taps = int(echo_cfg.get("taps", 8))
         self._echo_tau = float(echo_cfg.get("tau_s", 3.0))
+        from core.services.audio.aec import echo_canceller_impl
+        from core.utils.config import ConfigManager
+
+        # multimic.echo_canceller.impl 优先，其次和主麦同一个 barge_in.echo_canceller.impl
+        self._echo_impl = echo_canceller_impl(cfg, ConfigManager.instance().get_app_config("barge_in", {}))
         self._lock = threading.Lock()  # 输出缓冲
         self._dsp_lock = threading.Lock()  # 回声消除 / IVA 状态（换连接时可能有两个接收线程）
         self._buffers: dict[str, bytearray] = {name: bytearray() for name in names}
@@ -83,13 +88,16 @@ class MultiMicInput:
         self.connects = 0
 
     def _reset_dsp(self):
-        from core.services.audio.aec import SubbandEchoCanceller
+        from core.services.audio.aec import create_echo_canceller
         from core.services.audio.multimic import OnlineAuxIVA
 
         from core.services.audio.highpass import make_highpass
         from core.utils.config import ConfigManager
 
-        self._echo = [SubbandEchoCanceller(taps=self._echo_taps, tau_s=self._echo_tau) for _ in range(MIC_CHANNELS)]
+        self._echo = [
+            create_echo_canceller(self._echo_impl, taps=self._echo_taps, tau_s=self._echo_tau)
+            for _ in range(MIC_CHANNELS)
+        ]
         # 和单声道同一个高通（audio_input.highpass_hz），放在回声消除之后、IVA 之前
         self._highpass = make_highpass(
             ConfigManager.instance().get_app_config("audio_input.highpass_hz", None), channels=MIC_CHANNELS
@@ -148,7 +156,8 @@ class MultiMicInput:
         threading.Thread(target=self._watchdog, daemon=True, name="multimic-watchdog").start()
         logger.info(
             f"多麦唤醒输入已启用：端口 {self.port}，输出 {self.names}，gain {self.gain:g}，"
-            f"IVA alpha {self.alpha}，回声消除 {'开' if self.aec else '关'}",
+            f"IVA alpha {self.alpha}，回声消除 {(type(self._echo[0]).__name__) if self.aec else '关'}，"
+            f"高通 {type(self._highpass).__name__ if self._highpass is not None else '关'}",
             module=LOG_MODULE,
         )
 

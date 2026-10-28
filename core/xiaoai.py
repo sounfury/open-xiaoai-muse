@@ -199,15 +199,17 @@ class XiaoAI:
     @classmethod
     def _cancel_echo(cls, frames) -> bytes:
         """[麦克风, 回采] → 消除回声后的单声道 S16，电平与单声道录音一致。"""
-        from core.services.audio.aec import SubbandEchoCanceller
+        from core.services.audio.aec import create_echo_canceller, echo_canceller_impl
 
         barge_in = cls.config_manager.get_app_config("barge_in", {}) or {}
         if cls.echo is None:
             settings = barge_in.get("echo_canceller") or {}
-            cls.echo = SubbandEchoCanceller(
+            cls.echo = create_echo_canceller(
+                echo_canceller_impl(barge_in),
                 taps=int(settings.get("taps", 8)),
                 tau_s=float(settings.get("tau_s", 3.0)),
             )
+            logger.info(f"[XiaoAI] 回声消除：{type(cls.echo).__name__}（{type(cls.echo).__module__}）")
         now = time.monotonic()
         cls._echo_seen = now
         cleaned = cls.echo.process(frames[:, 0], frames[:, 1]) * cls._echo_mic_gain

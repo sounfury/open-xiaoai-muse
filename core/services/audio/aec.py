@@ -14,9 +14,45 @@ examples/xiaozhi/xiaozhi/services/audio/aec.py。本项目只加了两道保护�
 互谱求解。滤波器只在有播放时学习，不播放时保持不变（回声路径就是音箱自己的
 腔体，几乎不变），因此不需要双讲检测。OwnDing 先试过 WebRTC AEC3：它的残余
 回声抑制把说话人也压掉了，大部分唤醒词识别不出来。
+
+Rust 版（native/src/dsp/aec.rs，`open_xiaoai_server.EchoCanceller`）接口相同、计算时释放 GIL；
+用 create_echo_canceller() 按配置 `echo_canceller.impl`（"python" | "rust"）选择。
 """
 
 import numpy as np
+
+from core.utils.logger import logger
+
+IMPLS = ("python", "rust")
+_warned_fallback = False
+
+
+def create_echo_canceller(impl: str | None = None, **kwargs):
+    """按 impl 创建回声消除器；"rust" 不可用（旧的原生模块）时退回 Python 版并记一次警告。"""
+    global _warned_fallback
+    impl = str(impl or "python").strip().lower()
+    if impl not in IMPLS:
+        logger.warning(f"未知的回声消除实现 {impl!r}，使用 python", module="AEC")
+        impl = "python"
+    if impl == "rust":
+        try:
+            from open_xiaoai_server import EchoCanceller
+
+            return EchoCanceller(**kwargs)
+        except ImportError:
+            if not _warned_fallback:
+                _warned_fallback = True
+                logger.warning("原生模块里没有 EchoCanceller（需要重新编译），回声消除退回 Python 版", module="AEC")
+    return SubbandEchoCanceller(**kwargs)
+
+
+def echo_canceller_impl(*sections: dict | None) -> str:
+    """依次在几个配置段的 echo_canceller.impl 里取第一个设置了的值，默认 python。"""
+    for section in sections:
+        value = ((section or {}).get("echo_canceller") or {}).get("impl")
+        if value:
+            return str(value)
+    return "python"
 
 
 class SubbandEchoCanceller:
