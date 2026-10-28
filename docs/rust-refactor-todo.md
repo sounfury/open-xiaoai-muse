@@ -1,6 +1,6 @@
 # 待办：音频前端用 Rust 重写
 
-> 状态：第 0 步已测；第 1、2 步代码完成、离线对比通过，等音箱验收。最后更新：2026-10-28。
+> 状态：第 0 步已测；第 1、2 步已上线（音箱验收通过，默认 rust）。最后更新：2026-10-28。
 > 范围：从"收到音箱音频包"到"得到干净的单声道和多麦分离结果"这一段（回声消除、高通、多麦分离、聆听灯推流）。
 > 会话控制、后端请求、TTS、灯效、设备命令留在 Python；以后做 Android App 时这部分用 Kotlin 写。
 
@@ -50,9 +50,11 @@ GIL：`scripts/kws_gil_bench.py` 显示 sherpa 解码时释放 GIL（4 线程加
 - [x] 输入输出缓冲、最近 2 秒的输出 / 回声历史改成预分配缓冲（`VecDeque`），不再每次分配
 - [x] PyO3 暴露 `open_xiaoai_server.EchoCanceller`：`process(mic, ref)`、`delay`、`ref_active`、`frames`、`recent_end`、`reduction_db()`、`near_end_ratio_db(window_s, slice_s)`；计算时 `allow_threads`，内部 Mutex（收包线程 process、主循环 near_end_ratio_db 可以同时调）；输入接受任意数值类型和跨步视图
 - [x] 离线对比（`scripts/dsp_compare.py`）：合成数据和真实录音、三种包长，输出相对 RMS 误差 5e-15～1.5e-14，`near_end_ratio_db` 最多差 2e-9 dB，状态一致
-- [x] 加开关 `barge_in.echo_canceller.impl = "python" | "rust"`（多麦也用它，`multimic.echo_canceller.impl` 可单独覆盖），仓库默认仍是 Python；平板上已改成 rust 待验收
-- [ ] 音箱验收：播报中喊"你好缪斯"能打断；播报不会自己打断自己（近端门限 `near_end_min_db` 照常生效）
-- [ ] 验收后把仓库默认切到 rust
+- [x] 加开关 `barge_in.echo_canceller.impl = "python" | "rust"`（多麦也用它，`multimic.echo_canceller.impl` 可单独覆盖）
+- [x] 音箱验收：播报中喊"你好缪斯"能打断；播报不会自己打断自己（2026-10-28 通过）
+- [x] 验收后把仓库默认切到 rust（Python 版保留，`impl = "python"` 可切回）
+
+线上（平板、各采 60 秒 `thread_cpu.sh`）：`multimic-conn` 30.6% → 20.7%（剩下主要是 IVA），原生线程 4.7% → 2.4%。
 
 耗时（平板）：单路每 32 ms 从 0.81 ms 降到 0.15 ms（单核 2.5% → 0.5%）；整条链路里多麦 3 路每块
 6.0 → 0.86 ms、主麦每帧 1.68 → 0.31 ms；一直说话时实时率 0.580 → 0.531（前端全部不占 GIL 的上限是 0.539）。

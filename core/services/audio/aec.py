@@ -30,10 +30,10 @@ _warned_fallback = False
 def create_echo_canceller(impl: str | None = None, **kwargs):
     """按 impl 创建回声消除器；"rust" 不可用（旧的原生模块）时退回 Python 版并记一次警告。"""
     global _warned_fallback
-    impl = str(impl or "python").strip().lower()
+    impl = str(impl or "rust").strip().lower()
     if impl not in IMPLS:
-        logger.warning(f"未知的回声消除实现 {impl!r}，使用 python", module="AEC")
-        impl = "python"
+        logger.warning(f"未知的回声消除实现 {impl!r}，使用 rust", module="AEC")
+        impl = "rust"
     if impl == "rust":
         try:
             from open_xiaoai_server import EchoCanceller
@@ -47,12 +47,12 @@ def create_echo_canceller(impl: str | None = None, **kwargs):
 
 
 def echo_canceller_impl(*sections: dict | None) -> str:
-    """依次在几个配置段的 echo_canceller.impl 里取第一个设置了的值，默认 python。"""
+    """依次在几个配置段的 echo_canceller.impl 里取第一个设置了的值，默认 rust。"""
     for section in sections:
         value = ((section or {}).get("echo_canceller") or {}).get("impl")
         if value:
             return str(value)
-    return "python"
+    return "rust"
 
 
 class SubbandEchoCanceller:

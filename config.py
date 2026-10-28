@@ -250,9 +250,9 @@ APP_CONFIG = {
         "near_end_min_db": None,
         # 回声消除器（core/services/audio/aec.py）
         "echo_canceller": {
-            # "python"（aec.py）| "rust"（native/src/dsp/aec.rs，计算时不占 GIL）；多麦链路也用这个
+            # "rust"（native/src/dsp/aec.rs，计算时不占 GIL，默认）| "python"（aec.py，备用）；多麦链路也用这个
             # （multimic.echo_canceller.impl 可单独覆盖）。改了要重启 bridge
-            "impl": "python",
+            "impl": "rust",
             "taps": 8,  # 回声尾巴长度（帧，每帧 16 ms）
             "tau_s": 3.0,  # 回声路径估计的平均时长（秒）
         },
