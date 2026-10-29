@@ -1,2 +1,3 @@
 *.sh text eol=lf
 deploy/android-chroot/android text eol=lf
+deploy/android-chroot/ksu-module/** text eol=lf

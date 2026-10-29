@@ -57,3 +57,4 @@ dist-migration/
 # 唤醒词验收：合成样本 / 真机录音（scripts/kws_samples.py、AUDIO_INPUT_DUMP）
 tests/data/
 .pi-tmp/
+deploy/android-chroot/muse-guard.zip

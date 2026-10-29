@@ -1,0 +1,6 @@
+id=muse-guard
+name=Muse 守护
+version=v1.0
+versionCode=1
+author=open-xiaoai-muse
+description=按时间表开关睡眠待机优化，保护时段 Wi‑Fi 被关自动重开，显示音箱是否连着 bridge（打开网页界面看详情）

@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Muse 守护</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #181b22; --line: #262a33; --text: #e8eaf0; --dim: #8a90a0;
+    --ok: #34d399; --bad: #f87171; --warn: #fbbf24; --accent: #7aa2ff; --night: #a78bfa;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f5f8; --card: #fff; --line: #e3e5ea; --text: #1b1e25; --dim: #6b7280; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px 32px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; display: grid; gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px; }
+  h2 { font-size: 13px; font-weight: 600; color: var(--dim); margin: 0 0 10px; letter-spacing: .04em; }
+  .hero { display: flex; align-items: center; gap: 18px; padding: 22px 20px; }
+  .dot { width: 64px; height: 64px; border-radius: 50%; flex: none; position: relative; background: var(--dim); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 0 rgba(52,211,153,.55); animation: pulse 2.4s infinite; }
+  .dot.bad { background: var(--bad); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.5); } 70% { box-shadow: 0 0 0 18px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
+  .big { font-size: 26px; font-weight: 700; }
+  .sub { color: var(--dim); font-size: 14px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .row span:first-child { color: var(--dim); }
+  .row span:last-child { text-align: right; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .mode { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+  .mode .big { font-size: 22px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  button {
+    font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 8px; cursor: pointer;
+  }
+  button.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  button:active { transform: scale(.98); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .times { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .times label { display: grid; gap: 4px; font-size: 13px; color: var(--dim); }
+  input[type=time] {
+    font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px; width: 100%;
+  }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .events { margin: 0; padding: 0; list-style: none; font-size: 13.5px; max-height: 420px; overflow: auto; }
+  .events li { display: grid; grid-template-columns: 92px 1fr; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+  .events li:first-child { border-top: 0; }
+  .events time { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .stat { display: flex; gap: 18px; margin-bottom: 8px; font-size: 13px; color: var(--dim); }
+  .stat b { color: var(--text); font-size: 18px; margin-right: 2px; }
+  .hint { font-size: 12.5px; color: var(--dim); margin-top: 10px; }
+  .err { color: var(--bad); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card hero">
+    <div id="dot" class="dot"></div>
+    <div>
+      <div id="connText" class="big">读取中…</div>
+      <div id="connSub" class="sub"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>待机优化</h2>
+    <div class="mode"><span id="modeIcon"></span><span id="modeText" class="big"></span></div>
+    <div id="modeSub" class="sub"></div>
+    <div class="seg">
+      <button data-mode="auto">按时间表</button>
+      <button data-mode="protect">保持保护</button>
+      <button data-mode="save">现在省电</button>
+    </div>
+    <div class="hint">保护 = 关掉睡眠待机优化，Wi‑Fi 被关会自动重开，Muse 一直可用；省电 = 打开睡眠待机优化，熄屏约 1 小时后系统会关 Wi‑Fi。手动选择只到下一次切换为止，之后回到时间表。</div>
+  </div>
+
+  <div class="card">
+    <h2>状态</h2>
+    <div class="row"><span>今天</span><span id="today"></span></div>
+    <div class="row"><span>bridge</span><span id="bridge"></span></div>
+    <div class="row"><span>多麦录音（4401）</span><span id="multimic"></span></div>
+    <div class="row"><span>Wi‑Fi</span><span id="wifi"></span></div>
+    <div class="row"><span>睡眠待机优化（系统设置）</span><span id="deepsleep"></span></div>
+    <div class="row"><span>节假日数据</span><span id="holiday"></span></div>
+    <div class="row"><span>状态更新于</span><span id="updated"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>时间表</h2>
+    <div class="times">
+      <label>每天省电从<input id="tNight" type="time"></label>
+      <label>周末 / 节假日保护从<input id="tOff" type="time"></label>
+      <label>工作日保护从<input id="tWork" type="time"></label>
+    </div>
+    <div class="hint">工作日包括调休补班，节假日按国务院放假安排（holiday-cn）。没拿到当年安排时只按周六日判断。</div>
+    <div style="margin-top:10px"><button id="saveTimes" class="primary" style="width:100%">保存时间表</button></div>
+  </div>
+
+  <div class="card">
+    <h2>操作</h2>
+    <div class="actions">
+      <button id="restart">重启 bridge</button>
+      <button id="updHoliday">更新节假日数据</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>最近事件</h2>
+    <div class="stat"><span><b id="drops24">-</b>次断开（24 小时）</span><span><b id="wifi24">-</b>次重开 Wi‑Fi（24 小时）</span></div>
+    <ul id="events" class="events"></ul>
+  </div>
+  <div id="err" class="err"></div>
+</div>
+
+<script>
+const G = "sh /data/adb/modules/muse-guard/guard.sh";
+let seq = 0;
+function exec(cmd) {
+  return new Promise((resolve, reject) => {
+    if (typeof ksu === "undefined") return reject(new Error("需要在 KernelSU 管理器里打开"));
+    const cb = "__muse_cb_" + Date.now() + "_" + (seq++);
+    window[cb] = (errno, stdout, stderr) => { delete window[cb]; resolve({ errno, stdout, stderr }); };
+    try { ksu.exec(cmd, "{}", cb); } catch (e) { delete window[cb]; reject(e); }
+  });
+}
+function toast(msg) { try { ksu.toast(msg); } catch (_) { alert(msg); } }
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, "0");
+function hm(epoch) { const d = new Date(epoch * 1000); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+function mdhm(epoch) { const d = new Date(epoch * 1000); return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + hm(epoch); }
+function whenText(epoch) {
+  const d = new Date(epoch * 1000), now = new Date();
+  const days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+  return (days === 0 ? "今天 " : days === 1 ? "明天 " : days === 2 ? "后天 " : mdhm(epoch).slice(0, 5) + " ") + hm(epoch);
+}
+function dur(sec) {
+  sec = Math.max(0, sec);
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  if (d) return d + " 天 " + h + " 小时";
+  if (h) return h + " 小时 " + m + " 分";
+  return m + " 分";
+}
+const toTime = (s) => s.slice(0, 2) + ":" + s.slice(2);
+const fromTime = (s) => s.replace(":", "");
+
+let timesDirty = false;
+["tNight", "tOff", "tWork"].forEach((id) => $(id).addEventListener("input", () => { timesDirty = true; }));
+
+function render(s, events) {
+  const now = Date.now() / 1000;
+  $("dot").className = "dot " + (s.conn ? "ok" : "bad");
+  $("connText").textContent = s.conn ? "音箱已连接" : "音箱未连接";
+  $("connText").className = "big " + (s.conn ? "ok" : "bad");
+  $("connSub").textContent = (s.conn ? `${s.peer} · 已连接 ${dur(now - s.conn_since)}` : `已断开 ${dur(now - s.conn_since)}`) + `（${mdhm(s.conn_since)} 起）`;
+
+  const protect = s.mode === "protect";
+  $("modeIcon").textContent = protect ? "🛡" : "🌙";
+  $("modeText").textContent = protect ? "保护中" : "省电中";
+  $("modeText").className = "big " + (protect ? "ok" : "");
+  $("modeSub").textContent = (s.why === "manual" ? `手动设置，${whenText(s.switch_at)} 回到时间表` : `按时间表，${whenText(s.switch_at)} 切换到${protect ? "省电" : "保护"}`);
+  document.querySelectorAll("[data-mode]").forEach((b) => {
+    const m = b.dataset.mode;
+    b.classList.toggle("on", s.why === "manual" ? m === s.mode : m === "auto");
+  });
+
+  $("today").textContent = s.today;
+  $("bridge").innerHTML = s.bridge === "running" ? '<span class="ok">运行中</span>' : `<span class="bad">没有运行</span>${s.supervisor === "running" ? "（守护循环在，等待重启）" : "（守护循环也没在）"}`;
+  $("multimic").innerHTML = s.multimic ? `<span class="ok">已连接</span>` : '<span class="warn">未连接</span>';
+  $("wifi").innerHTML = s.wifi_on ? `<span class="ok">开</span> ${s.ssid || ""} ${s.ip || "（没有 IP）"}` : '<span class="bad">关</span>';
+  $("deepsleep").textContent = s.deepsleep === "0" ? "关" : s.deepsleep === "1" ? "开" : s.deepsleep;
+  $("holiday").textContent = (s.holiday_years || "无") + (s.holiday_checked ? ` · ${mdhm(s.holiday_checked)} 检查` : "");
+  $("updated").textContent = mdhm(s.updated).slice(6) + ":" + pad(new Date(s.updated * 1000).getSeconds()) + (now - s.updated > 60 ? "（守护循环可能没在跑）" : "");
+  if (now - s.updated > 60) $("updated").className = "bad"; else $("updated").className = "";
+
+  if (!timesDirty) {
+    $("tNight").value = toTime(s.times.night_save);
+    $("tOff").value = toTime(s.times.offday_protect);
+    $("tWork").value = toTime(s.times.workday_protect);
+  }
+
+  const lines = events.trim().split("\n").filter(Boolean);
+  let drops = 0, wifis = 0;
+  for (const l of lines) {
+    const t = new Date(l.slice(0, 19).replace(" ", "T")).getTime() / 1000;
+    if (now - t < 86400) {
+      if (l.includes("音箱断开")) drops++;
+      if (l.includes("重新打开")) wifis++;
+    }
+  }
+  $("drops24").textContent = drops;
+  $("wifi24").textContent = wifis;
+  $("events").innerHTML = lines.reverse().slice(0, 60).map((l) => {
+    const cls = l.includes("断开") || l.includes("被关") ? "bad" : l.includes("已连接") ? "ok" : "";
+    const text = l.slice(20).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    return `<li><time>${l.slice(5, 16)}</time><span class="${cls}">${text}</span></li>`;
+  }).join("");
+}
+
+async function refresh(force) {
+  try {
+    const r = await exec(`${force ? G + " once >/dev/null; " : ""}${G} status; echo; echo '@@@'; tail -n 200 /data/adb/muse-guard/events.log 2>/dev/null`);
+    const [json, events] = r.stdout.split("@@@");
+    render(JSON.parse(json), events || "");
+    $("err").textContent = "";
+  } catch (e) {
+    $("err").textContent = "读取失败：" + e.message;
+  }
+}
+
+async function run(cmd, okMsg) {
+  const r = await exec(cmd);
+  if (r.errno !== 0) toast((r.stderr || r.stdout || "失败").trim());
+  else if (okMsg) toast(okMsg);
+  await refresh(false);
+  return r;
+}
+
+document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () =>
+  run(`${G} set-mode ${b.dataset.mode} >/dev/null`, b.textContent)));
+$("saveTimes").addEventListener("click", async () => {
+  const r = await run(`${G} set-times ${fromTime($("tNight").value)} ${fromTime($("tOff").value)} ${fromTime($("tWork").value)} >/dev/null`, "时间表已保存");
+  if (r.errno === 0) timesDirty = false;
+});
+$("restart").addEventListener("click", () => {
+  if (confirm("重启 bridge？大约 10 秒内 Muse 不可用。")) run(`${G} restart-bridge`, "已重启");
+});
+$("updHoliday").addEventListener("click", async () => {
+  toast("正在下载…");
+  const r = await run(`${G} update-holidays`);
+  if (r.errno === 0) toast(r.stdout.trim().split("\n").pop());
+});
+
+refresh(true);
+setInterval(() => refresh(false), 5000);
+</script>
+</body>
+</html>

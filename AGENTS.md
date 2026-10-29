@@ -404,10 +404,15 @@ API_SERVER_ENABLE=1 uv run main.py
 - Ubuntu 24.04 arm64 chroot 在 `/data/local/ubuntu`，项目在 chroot 内 `/opt/open-xiaoai-bridge`（git archive + 模型 + `.hermes_api_key`，不是 git 仓库）；管理脚本在 Android 侧 `/data/local/ubuntu-tools/`，都要用 `su -M` 跑（挂载进全局命名空间）
 - 运维：`adb shell "su -M -c 'sh /data/local/ubuntu-tools/bridge-ctl.sh status|start|stop|restart|log 50'"`；日志 `/data/local/ubuntu/opt/open-xiaoai-bridge/logs/bridge-autostart.log`，守护日志 `/data/local/ubuntu-tools/run/supervisor.log`
 - 开机自启：`/data/adb/service.d/openxiaoai-bridge.sh`（等 boot_completed + wlan0 有 IP）。守护循环持 wakelock、每 15 秒重设 `iw dev wlan0 set power_save off`、放根 cpuset（0-7 核），bridge 退出按退避重启
+- ColorOS“睡眠待机优化”（`settings secure deepsleep_switch_state`，默认 1）会在熄屏约 1 小时后整个关掉 Wi‑Fi，直到亮屏才恢复，Muse 就断了（10-28 断过 15 小时）。由 KernelSU 模块 `muse-guard`（`deploy/android-chroot/ksu-module/`，`build-ksu-module.sh` 打包）管：
+  - 时间表：每天 02:00 起省电（待机优化开）；周末 / 节假日 08:00、工作日（含调休补班） 18:30 起保护（待机优化关，Wi‑Fi 被关就 `svc wifi enable`）。节假日用 holiday-cn 年度 JSON（模块自带 + 每 12 小时下载），没有当年数据时只按周六日
+  - 状态：每 15 秒从 `/proc/net/tcp` 看 4399 / 4401 有没有音箱连着，写 `/dev/muse-guard/status.json`（tmpfs）和模块描述；变化记在 `/data/adb/muse-guard/events.log`。KernelSU 管理器里打开模块网页界面可看连接、手动切换（只到下一次切换）、改时间、重启 bridge
+  - 调试：`sh /data/adb/modules/muse-guard/guard.sh sched "2026-10-31 07:00"` 看某个时刻按时间表是什么模式；`guard.sh text` 打印当前状态
+  - 未验证：只改 `deepsleep_switch_state` 是否立刻让 ColorOS 停止关 Wi‑Fi；即使不生效，保护时段里也会在 15 秒内重开（事件日志里的“Wi‑Fi 被关掉了，重新打开”）
 - sherpa-onnx 的 arm64 wheel 不带 ONNX Runtime：需要 `onnxruntime/capi/libonnxruntime.so` 软链 + `LD_LIBRARY_PATH`（`run-bridge.sh` 自动处理）
 - 平板上的 FlClash VPN 会让 chroot 外网走 tun0，Hermes 连接慢且偶发 DNS 失败；保持关闭或让 132.226.76.2 直连
 - chroot 里还装了 Node v24（`/opt/node`）、pi（`@earendil-works/pi-coding-agent`，`/root/.pi/agent/` 用 magpie.oci 的 12 个模型）和 paseo（`@getpaseo/cli`，`/root/.paseo`，监听 127.0.0.1:6767 + relay 配对，开机由 service.d 脚本 `paseo start`）；重装见 `setup-agents.sh`
-- SSH：chroot 内 sshd 监听 2222（仅密钥，`UsePAM no`；`setup-sshd.sh`，开机由 service.d 启动）。PC 上 `ssh tablet`（`~/.ssh/config`，默认用无密码短语的 `~/.ssh/tablet_ed25519`；`id_ed25519` 有密码短语，BatchMode 用不了）。SSH 进来是在 chroot 里，碰不到 Android 侧的 `bridge-ctl.sh`；要重启 bridge 可以 `pkill -INT -f "python main.py"`，守护循环约 3 秒后自动拉起
+- SSH：chroot 内 sshd 监听 2222（仅密钥，`UsePAM no`；`setup-sshd.sh`，开机由 service.d 启动）。PC 上 `ssh tablet`（`~/.ssh/config`，默认用无密码短语的 `~/.ssh/tablet_ed25519`；`id_ed25519` 有密码短语，BatchMode 用不了）。SSH 进来是在 chroot 里，碰不到 Android 侧的 `bridge-ctl.sh`；要重启 bridge 可以 `pkill -INT -f "python main.py"`，守护循环约 3 秒后自动拉起（10-29 实测一次 SIGINT 没让它退出，用 adb 跑 `bridge-ctl.sh restart` 更可靠）
 - chroot 里 uv 默认 `UV_FROZEN=1`：uv.toml 配了 USTC 镜像，不冻结会把整个 uv.lock 改写成镜像地址；venv 里 `sherpa_onnx/lib/libonnxruntime.so` 软链到 onnxruntime 的 .so
 - chroot 里操作 Android：`android '命令'`（`/usr/local/bin/android`，`nsenter -t 1 -m -r` 回到 Android 侧，环境变量取自 zygote）。`android 'input tap x y'`、`android 'screencap -p' > s.png`、`android 'uiautomator dump /data/local/tmp/ui.xml'` 再 `android 'cat ...'` 读出来；屏幕 1680x2520
 - Git Bash 调 adb 要 `MSYS_NO_PATHCONV=1`，否则 `/data/...` 被改成 Windows 路径
