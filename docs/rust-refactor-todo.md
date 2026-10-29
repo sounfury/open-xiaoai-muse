@@ -34,7 +34,7 @@
 主麦唤醒 17%、`multimic-conn`（回声消除 ×3 + 高通 + IVA）30.6%、原生线程（含主麦回声消除）4.7%，
 合计 122%。前端约占 29%。
 
-GIL：`scripts/kws_gil_bench.py` 显示 sherpa 解码时释放 GIL（4 线程加速 2.8 倍，CPU 379%），旁边再加一个
+GIL：一次性测试脚本 `kws_gil_bench.py`（已删除，见提交 `9627c15`）显示 sherpa 解码时释放 GIL（4 线程加速 2.8 倍，CPU 379%），旁边再加一个
 一直在跑的 numpy 回声消除线程只慢 5%。`perf_bench.py --precompute-front`（前端先算好、不占 GIL 的上限）
 实时率 0.628 → 0.539，每帧唤醒 17.8 → 16.8 ms。所以前端抢 GIL 对唤醒的拖慢不大，"一直说话"的瓶颈是唤醒本身。
 
