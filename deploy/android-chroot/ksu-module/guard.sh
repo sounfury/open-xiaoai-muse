@@ -119,7 +119,16 @@ peer_of() {
       print h(substr(a,7,2)) "." h(substr(a,5,2)) "." h(substr(a,3,2)) "." h(substr(a,1,2)); exit }'
 }
 
-alive_pidfile() { p=$(cat "$1" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+# guard.pid 位于 tmpfs，仍核对命令，避免本次开机内 PID 被复用。
+alive_guard() (
+  p=$(cat "$RUN/guard.pid" 2>/dev/null)
+  case "$p" in ''|*[!0-9]*|0|1) exit 1 ;; esac
+  tr '\0' '\n' 2>/dev/null < "/proc/$p/cmdline" | awk -v script="$MODDIR/guard.sh" '
+    NR == 1 { n=split($0,a,"/"); shell=(a[n]=="sh") }
+    NR == 2 { script_ok=($0==script) }
+    NR == 3 { mode_ok=($0=="daemon") }
+    END { exit !(NR==3 && shell && script_ok && mode_ok) }'
+)
 
 tick() {
   now=$(date +%s)
@@ -171,10 +180,12 @@ tick() {
     since=$2
   fi
 
+  # 不自行解释 PID 文件；与 bridge-ctl 的启动、停止使用相同的身份校验。
+  processes=$(sh "$TOOLS/bridge-ctl.sh" process-status 2>/dev/null)
   bridge=stopped
-  alive_pidfile "$TOOLS/run/bridge.pid" && bridge=running
+  echo "$processes" | grep -qx 'bridge=running' && bridge=running
   supervisor=stopped
-  alive_pidfile "$TOOLS/run/supervisor.pid" && supervisor=running
+  echo "$processes" | grep -qx 'supervisor=running' && supervisor=running
 
   years=$(cut -c1-4 "$STATE/holidays.txt" 2>/dev/null | sort -u | tr '\n' ' ')
   checked=$(cat "$STATE/holiday/.checked" 2>/dev/null || echo 0)
@@ -200,7 +211,7 @@ EOF
 }
 
 daemon() {
-  if alive_pidfile "$RUN/guard.pid"; then echo "already running ($(cat "$RUN/guard.pid"))"; return 0; fi
+  if alive_guard; then echo "already running ($(cat "$RUN/guard.pid"))"; return 0; fi
   echo $$ > "$RUN/guard.pid"
   note "守护启动"
   rebuild_holidays
